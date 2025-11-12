@@ -1,0 +1,162 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>RTIS Analysis App</title>
+<style>
+  body{font-family:system-ui,Arial;padding:16px;max-width:1000px;margin:auto}
+  label{margin-right:12px}
+  pre{background:#f6f6f6;padding:8px;white-space:pre-wrap}
+  .row{margin:10px 0}
+</style>
+
+<h2>RTIS Analysis App</h2>
+
+<div class="row">
+  <input type="file" id="csv" accept=".csv" />
+  <button id="btnUpload">Load CSV</button>
+</div>
+
+<!-- <div class="row">
+  <label>Station contains: <input id="station" /></label>
+  <label>Direction equals: <input id="direction" placeholder="UP/DOWN" /></label>
+  <label>Speed &lt; <input id="speed" type="number" step="0.1" /></label>
+</div> -->
+
+<div class="row">
+  <label>Train Number: <input id="trainNumber" placeholder="e.g., 11030" /></label>
+  <button id="btnFetchTrain">Fetch Train</button>
+</div>
+
+<div class="row">
+  <label>From: <input id="fromStation" readonly /></label>
+  <label>To: <input id="toStation" readonly /></label>
+  <label>Direction: <input id="dirResolved" readonly /></label>
+</div>
+
+<div class="row">
+  <button id="btnAnalyze">Analyze</button>
+  <button id="btnExport">Export Excel</button>
+</div>
+<div id="chart" style="width:100%;height:360px;margin-top:10px;border:1px solid #eee"></div>
+
+<pre id="out"></pre>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
+<script>
+const API = ""; // same-origin
+
+function getCriteria(){
+  return {
+    direction_equals: window.__resolvedDirection || undefined,
+    from_station_equals: document.getElementById("fromStation").value || undefined,
+    to_station_equals: document.getElementById("toStation").value || undefined,
+  };
+}
+
+async function fetchTrainMeta() {
+  const tn = document.getElementById("trainNumber").value.trim();
+  if (!tn) { alert("Enter a train number"); return; }
+  const r = await fetch(`${API}/train_info?train_number=${encodeURIComponent(tn)}`);
+  const j = await r.json();
+  if (!r.ok) {
+    alert(j.error || "Train not found");
+    return;
+  }
+  document.getElementById("fromStation").value = j.from_station || "";
+  document.getElementById("toStation").value = j.to_station || "";
+  document.getElementById("dirResolved").value = (j.direction || "").toUpperCase();
+  window.__resolvedDirection = (j.direction || "").toUpperCase();
+
+  const out = {
+    note: "Resolved from base-data",
+    train_number: j.train_number,
+    train_name: j.train_name,
+    from: j.from_station, to: j.to_station,
+    departure_time: j.departure_time, arrival_time: j.arrival_time,
+    direction: j.direction
+  };
+  document.getElementById("out").textContent = "Train info:\n" + JSON.stringify(out, null, 2);
+}
+
+document.getElementById("btnFetchTrain").onclick = fetchTrainMeta;
+document.getElementById("trainNumber").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") fetchTrainMeta();
+});
+
+document.getElementById("btnUpload").onclick = async () => {
+  const f = document.getElementById("csv").files[0];
+  if(!f){ alert("Choose a CSV first"); return; }
+  const fd = new FormData(); fd.append("file", f);
+  const r = await fetch(`${API}/load_csv`, { method:"POST", body: fd });
+  const j = await r.json();
+  document.getElementById("out").textContent = "Loaded:\n" + JSON.stringify(j,null,2);
+};
+
+async function drawChart(criteria){
+  const r = await fetch(`${API}/chart_data`, {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(criteria)
+  });
+  const j = await r.json();
+  const el = document.getElementById("chart");
+  const chart = echarts.init(el);
+  const markAreas = (j.restrictions || []).map(seg => [
+    { xAxis: seg.start, yAxis: 0 },
+    { xAxis: seg.end || seg.start, yAxis: seg.limit }
+  ]);
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 30, bottom: 40 },
+    xAxis: { type: 'category', data: j.labels, name: 'Time' },
+    yAxis: { type: 'value', name: j.yLabel || 'Speed' },
+    series: [
+      {
+        name: 'Speed',
+        type: 'line',
+        smooth: true,
+        data: j.values,
+        markArea: markAreas.length ? {
+          itemStyle: { color: 'rgba(255, 99, 132, 0.25)' },
+          data: markAreas
+        } : undefined
+      },
+      {
+        name: 'MPS',
+        type: 'line',
+        step: 'middle',
+        symbol: 'none',
+        lineStyle: { color: '#ffa500', width: 2 },
+        data: (j.mps || []).map(v => v ?? null)
+      }
+    ]
+  });
+}
+
+async function analyzeAndPlot(){
+  const criteria = getCriteria();
+  const r = await fetch(`${API}/analyze`, {
+    method:"POST",
+    headers: { "Content-Type":"application/json" },
+    body: JSON.stringify(criteria)
+  });
+  const j = await r.json();
+  document.getElementById("out").textContent = "Analyze result:\n" + JSON.stringify(j,null,2);
+  await drawChart(criteria);
+}
+
+document.getElementById("btnAnalyze").onclick = analyzeAndPlot;
+
+document.getElementById("btnExport").onclick = async () => {
+  const r = await fetch(`${API}/export`, {
+    method:"POST",
+    headers: { "Content-Type":"application/json" },
+    body: JSON.stringify(getCriteria())
+  });
+  if(!r.ok){ const t = await r.text(); alert("Export failed:\n" + t); return; }
+  const blob = await r.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "filtered.xlsx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+</script>

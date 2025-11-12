@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / packaging
+*.egg-info/
+dist/
+build/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
