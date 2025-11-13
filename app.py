@@ -5,6 +5,7 @@ import polars as pl
 import pandas as pd
 import io, time, re, math
 from typing import Dict, Any
+from datetime import datetime
 from pathlib import Path
 
 # ------------------------------
@@ -47,6 +48,10 @@ STATION_SEQUENCE_LOOKAHEAD_ROWS = 1500
 STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
+BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20]
+
+MAIL_STAFF: list[dict[str, Any]] = []
+CLI_STAFF: list[dict[str, Any]] = []
 
 MPS_CONFIG: dict[str, float] = {
     # DN (CSMT → PUNE)
@@ -209,6 +214,70 @@ def load_trains_base():
 
 # Load at import
 load_trains_base()
+
+
+def load_mail_staff():
+    """Load LP staff list from mail_staff.csv (root folder)."""
+    global MAIL_STAFF
+    try:
+        path = BASE_DIR / "mail_staff.csv"
+        if not path.exists():
+            print("[WARN] mail_staff.csv not found; LP suggestions disabled")
+            MAIL_STAFF = []
+            return
+        df = pl.read_csv(path)
+        df = df.rename({c: c.strip().lower() for c in df.columns})
+        required = {"cmsid", "employee name", "desg"}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f"mail_staff.csv missing columns: {sorted(missing)}")
+        MAIL_STAFF = [
+            {
+                "cmsid": str(row.get("cmsid") or "").strip().upper(),
+                "name": str(row.get("employee name") or "").strip(),
+                "designation": str(row.get("desg") or "").strip(),
+            }
+            for row in df.iter_rows(named=True)
+            if row.get("employee name")
+        ]
+        print(f"[OK] Loaded {len(MAIL_STAFF)} LP staff entries from {path.name}")
+    except Exception as exc:
+        print(f"[ERROR] Failed to load mail_staff.csv: {exc}")
+        MAIL_STAFF = []
+
+
+def load_cli_staff():
+    """Load CLI/analyst roster for autocomplete suggestions."""
+    global CLI_STAFF
+    try:
+        path = BASE_DIR / "cli data for upload - Sheet1.csv"
+        if not path.exists():
+            print("[WARN] CLI data CSV not found; CLI suggestions disabled")
+            CLI_STAFF = []
+            return
+        df = pl.read_csv(path)
+        df = df.rename({c: c.strip().lower() for c in df.columns})
+        required = {"cli_cms_id", "cli_name", "current_office_code"}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f"CLI data CSV missing columns: {sorted(missing)}")
+        CLI_STAFF = [
+            {
+                "cmsid": str(row.get("cli_cms_id") or "").strip().upper(),
+                "name": str(row.get("cli_name") or "").strip(),
+                "office": str(row.get("current_office_code") or "").strip().upper(),
+            }
+            for row in df.iter_rows(named=True)
+            if row.get("cli_name")
+        ]
+        print(f"[OK] Loaded {len(CLI_STAFF)} CLI records from {path.name}")
+    except Exception as exc:
+        print(f"[ERROR] Failed to load CLI staff CSV: {exc}")
+        CLI_STAFF = []
+
+
+load_mail_staff()
+load_cli_staff()
 
 
 def load_geofences():
@@ -938,6 +1007,20 @@ def _find_time_column(columns: list[str]) -> str | None:
     return None
 
 
+def _find_distance_column(columns: list[str]) -> str | None:
+    candidates = [
+        ("DIST", "PREV"),
+        ("DIST", "LAT"),
+        ("DIST", "SPEED"),
+        ("DIST",),
+    ]
+    for keys in candidates:
+        col = _first_matching_column(columns, *keys)
+        if col:
+            return col
+    return None
+
+
 def _parse_datetime_expr(col: str) -> pl.Expr:
     """Return expression that parses various timestamp formats."""
     exprs = [pl.col(col).str.strptime(pl.Datetime, strict=False)]
@@ -949,6 +1032,14 @@ def _parse_datetime_expr(col: str) -> pl.Expr:
     ]
     exprs.extend(pl.col(col).str.strptime(pl.Datetime, format=fmt, strict=False) for fmt in custom_formats)
     return pl.coalesce(exprs)
+
+
+def _stringify_time(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def _repair_shifted_rows(df: pl.DataFrame) -> pl.DataFrame:
@@ -1195,6 +1286,14 @@ def chart_data(criteria: dict = Body(...)):
         "mps": mps_values,
     }
 
+@app.post("/braking_profile")
+def braking_profile(criteria: dict = Body(...)):
+    if DF is None:
+        return JSONResponse({"error": "no data loaded"}, status_code=400)
+    filtered = apply_criteria(DF, criteria)
+    halts = _braking_profile(filtered, BRAKE_OFFSETS)
+    return {"offsets": BRAKE_OFFSETS, "halts": halts}
+
 
 # ------------------------------
 # Train Info (uses normalized key)
@@ -1239,6 +1338,16 @@ def debug_base_data():
         "row_count": int(TRAINS_DF.height) if TRAINS_DF is not None else 0,
         "has_norm_col": ("train_number_norm" in cols) if TRAINS_DF is not None else False,
     }
+
+
+@app.get("/lookup/staff")
+def staff_lookup():
+    """Return LP + CLI rosters for UI autocomplete."""
+    if not MAIL_STAFF:
+        load_mail_staff()
+    if not CLI_STAFF:
+        load_cli_staff()
+    return {"lp": MAIL_STAFF, "cli": CLI_STAFF}
 def _route_key(from_station: str | None, to_station: str | None) -> str | None:
     if not from_station or not to_station:
         return None
@@ -1600,3 +1709,93 @@ def _build_restriction_segments(labels: list[str], limits: list[float | None]) -
         current["end"] = labels[-1]
         segments.append(current)
     return segments
+
+
+def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
+    if df.is_empty():
+        return []
+    speed_col = _find_speed_column(df.columns)
+    dist_col = _find_distance_column(df.columns)
+    if not speed_col or not dist_col:
+        return []
+    speeds = (
+        df[speed_col]
+        .cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .to_list()
+    )
+    dist_steps = (
+        df[dist_col]
+        .cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .to_list()
+    )
+    dist_steps = [max(0.0, x or 0.0) for x in dist_steps]
+    cumulative: list[float] = []
+    running = 0.0
+    for step in dist_steps:
+        running += step
+        cumulative.append(running)
+
+    station_col = _first_matching_column(df.columns, "STATION", "CODE") or _first_matching_column(df.columns, "STATION")
+    if station_col:
+        stations = [str(val).strip() if val is not None else None for val in df[station_col].to_list()]
+    else:
+        stations = [None] * len(speeds)
+    time_col = _find_time_column(df.columns)
+    times = df[time_col].to_list() if time_col else [None] * len(speeds)
+    times = [_stringify_time(t) for t in times]
+
+    first_move_idx = next((i for i, sp in enumerate(speeds) if sp and sp > 0.5), None)
+    if first_move_idx is None:
+        return []
+
+    halts: list[int] = []
+    last_halt_distance: float | None = None
+    for idx in range(first_move_idx + 1, len(speeds)):
+        prev_speed = speeds[idx - 1]
+        current_speed = speeds[idx]
+        if current_speed <= 0.5 and prev_speed > 0.5:
+            halt_distance = cumulative[idx]
+            if last_halt_distance is not None and (halt_distance - last_halt_distance) < 200.0:
+                continue
+            halts.append(idx)
+            last_halt_distance = halt_distance
+
+    results: list[dict[str, Any]] = []
+    for seq, halt_idx in enumerate(halts, start=1):
+        halt_dist = cumulative[halt_idx]
+        halt_station = stations[halt_idx]
+        display_station = str(halt_station).strip() if halt_station else f"{halt_dist:.0f} m"
+        dist_to_halt: list[float] = [0.0] * (halt_idx + 1)
+        running_back = 0.0
+        for idx in range(halt_idx - 1, -1, -1):
+            step = dist_steps[idx + 1] if idx + 1 < len(dist_steps) else 0.0
+            running_back += step
+            dist_to_halt[idx] = running_back
+        halt_entry = {
+            "sequence": seq,
+            "index": halt_idx,
+            "station": display_station,
+            "logging_time": times[halt_idx],
+            "distance_m": halt_dist,
+            "speeds": {},
+        }
+        for offset in offsets:
+            target = float(offset)
+            chosen_idx = halt_idx
+            probe = halt_idx
+            while probe >= 0 and dist_to_halt[probe] <= target:
+                chosen_idx = probe
+                probe -= 1
+            if chosen_idx < 0:
+                chosen_idx = 0
+            diff = abs(target - dist_to_halt[chosen_idx])
+            halt_entry["speeds"][str(offset)] = {
+                "speed": speeds[chosen_idx],
+                "time": times[chosen_idx],
+                "station": stations[chosen_idx],
+                "delta_m": diff,
+            }
+        results.append(halt_entry)
+    return results

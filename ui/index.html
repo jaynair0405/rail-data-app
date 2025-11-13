@@ -1,47 +1,357 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>RTIS Analysis App</title>
+<title>CR • RTIS Insights Console</title>
 <style>
-  body{font-family:system-ui,Arial;padding:16px;max-width:1000px;margin:auto}
-  label{margin-right:12px}
-  pre{background:#f6f6f6;padding:8px;white-space:pre-wrap}
-  .row{margin:10px 0}
+  :root {
+    --brand: #0c4080;
+    --brand-soft: #e7eef9;
+    --accent: #1f7fde;
+    --border: #d4dbe8;
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --text: #1f2433;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+  }
+.app-header {
+  background: var(--brand);
+  color: #fff;
+  padding: 22px 36px;
+  box-shadow: 0 3px 12px rgba(6, 20, 40, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.app-header h1 {
+  margin: 0;
+  font-size: 1.7rem;
+  letter-spacing: 0.03em;
+}
+.app-header__title,
+.app-header__meta {
+  flex: 1;
+}
+.app-header__logo {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-header__logo img {
+  height: 54px;
+  width: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 10px rgba(0,0,0,0.25));
+}
+.app-header__meta {
+  text-align: right;
+  font-size: 0.95rem;
+  line-height: 1.2;
+}
+.meta-primary {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.meta-secondary {
+  opacity: 0.9;
+  font-size: 0.85rem;
+}
+  .app-container {
+    max-width: 1150px;
+    margin: 32px auto 64px;
+    padding: 0 24px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+    box-shadow: 0 12px 28px rgba(13, 38, 76, 0.08);
+  }
+  .card h3 {
+    margin: 0 0 14px;
+    font-size: 1.08rem;
+    color: var(--brand);
+    letter-spacing: 0.01em;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+  label {
+    font-size: 0.92rem;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+    min-width: 180px;
+  }
+  input, select {
+    font: inherit;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+  }
+  input[readonly] {
+    background: var(--brand-soft);
+  }
+  button {
+    font: inherit;
+    padding: 11px 22px;
+    border-radius: 12px;
+    border: none;
+    cursor: pointer;
+    color: #fff;
+    background: var(--brand);
+    transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+    box-shadow: 0 8px 18px rgba(12, 64, 128, 0.25);
+  }
+  button.secondary {
+    background: var(--accent);
+  }
+  button:hover {
+    transform: translateY(-1px);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  #chart {
+    width: 100%;
+    height: 380px;
+  }
+  pre {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    white-space: pre-wrap;
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px 20px;
+  }
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: var(--brand-soft);
+    font-size: 0.95rem;
+  }
+  .summary-row div:first-child {
+    font-weight: 600;
+    color: var(--brand);
+    margin-right: 12px;
+  }
+  .brake-table-wrapper {
+    overflow-x: auto;
+  }
+  table.brake-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+  table.brake-table th,
+  table.brake-table td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: center;
+    background: #fff;
+  }
+  table.brake-table th {
+    background: var(--brand);
+    color: #fff;
+    font-weight: 600;
+  }
+  table.brake-table td:first-child,
+  table.brake-table th:first-child {
+    text-align: left;
+  }
+  .warn {
+    color: #d7263d;
+    font-weight: 600;
+  }
+  .brake-table caption {
+    caption-side: bottom;
+    text-align: left;
+    font-size: 0.85rem;
+    color: #5a5a5a;
+    margin-top: 6px;
+  }
+  #brakeChart {
+    width: 100%;
+    height: 320px;
+  }
+  @media (max-width: 720px) {
+    .row { flex-direction: column; }
+  }
 </style>
 
-<h2>RTIS Analysis App</h2>
+<header class="app-header">
+  <div class="app-header__title">
+    <h1>CR • RTIS Insights Console</h1>
+  </div>
+  <div class="app-header__logo">
+    <img src="central-railway-LOGO.png" alt="Central Railway Logo" />
+  </div>
+  <div class="app-header__meta">
+    <div class="meta-primary">BB Division</div>
+    <div class="meta-secondary">Sr DEE TRSO</div>
+  </div>
+</header>
 
-<div class="row">
-  <input type="file" id="csv" accept=".csv" />
-  <button id="btnUpload">Load CSV</button>
-</div>
+<main class="app-container">
+  <section class="card">
+    <h3>Data File</h3>
+    <div class="row">
+      <label>Upload CSV
+        <input type="file" id="csv" accept=".csv" />
+      </label>
+      <div style="display:flex;align-items:flex-end;">
+        <button id="btnUpload" class="secondary">Load CSV</button>
+      </div>
+    </div>
+  </section>
 
-<!-- <div class="row">
-  <label>Station contains: <input id="station" /></label>
-  <label>Direction equals: <input id="direction" placeholder="UP/DOWN" /></label>
-  <label>Speed &lt; <input id="speed" type="number" step="0.1" /></label>
-</div> -->
+  <section class="card">
+    <h3>Train Details</h3>
+    <div class="row">
+      <label>Train Number
+        <input id="trainNumber" placeholder="e.g., 11030" />
+      </label>
+      <label>Loco Number
+        <input id="locoNumber" type="number" inputmode="numeric" pattern="\d*" placeholder="e.g., 30254" />
+      </label>
+      <label>Coaches
+        <select id="coachType">
+          <option value="LHB" selected>LHB</option>
+          <option value="ICF">ICF</option>
+        </select>
+      </label>
+      <div style="display:flex;align-items:flex-end;">
+        <button id="btnFetchTrain">Fetch Train</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>From
+        <input id="fromStation" readonly />
+      </label>
+      <label>To
+        <input id="toStation" readonly />
+      </label>
+      <label>Direction
+        <input id="dirResolved" readonly />
+      </label>
+    </div>
+  </section>
 
-<div class="row">
-  <label>Train Number: <input id="trainNumber" placeholder="e.g., 11030" /></label>
-  <button id="btnFetchTrain">Fetch Train</button>
-</div>
+  <section class="card">
+    <h3>Crew & CLI</h3>
+    <div class="row">
+      <label>LP
+        <input id="lpInput" list="lpOptions" placeholder="Start typing name" autocomplete="off" />
+      </label>
+      <label>NCLI
+        <input id="ncliInput" list="cliOptions" placeholder="Start typing name" autocomplete="off" />
+      </label>
+      <label>Analyzed By
+        <input id="analystInput" list="cliOptions" placeholder="Start typing name" autocomplete="off" />
+      </label>
+    </div>
+  </section>
 
-<div class="row">
-  <label>From: <input id="fromStation" readonly /></label>
-  <label>To: <input id="toStation" readonly /></label>
-  <label>Direction: <input id="dirResolved" readonly /></label>
-</div>
+  <datalist id="lpOptions"></datalist>
+  <datalist id="cliOptions"></datalist>
 
-<div class="row">
-  <button id="btnAnalyze">Analyze</button>
-  <button id="btnExport">Export Excel</button>
-</div>
-<div id="chart" style="width:100%;height:360px;margin-top:10px;border:1px solid #eee"></div>
+  <section class="card">
+    <h3>Actions</h3>
+    <div class="actions">
+      <button id="btnAnalyze">Analyze</button>
+      <button id="btnExport" class="secondary">Export Excel</button>
+    </div>
+  </section>
 
-<pre id="out"></pre>
+  <section class="card">
+    <h3>Performance Chart</h3>
+    <div id="chart"></div>
+  </section>
+
+  <section class="card">
+    <h3>Run Summary</h3>
+    <div class="summary-grid" id="summaryTable">
+      <div class="summary-row">
+        <div>Date of Working</div>
+        <div id="summaryWorkingDate">—</div>
+      </div>
+      <div class="summary-row">
+        <div>Section</div>
+        <div id="summarySection">—</div>
+      </div>
+      <div class="summary-row">
+        <div>LP</div>
+        <div id="summaryLP">—</div>
+      </div>
+      <div class="summary-row">
+        <div>Train Number</div>
+        <div id="summaryTrain">—</div>
+      </div>
+      <div class="summary-row">
+        <div>Loco Number</div>
+        <div id="summaryLoco">—</div>
+      </div>
+      <div class="summary-row">
+        <div>NCLI</div>
+        <div id="summaryNCLI">—</div>
+      </div>
+      <div class="summary-row">
+        <div>Analyzed By</div>
+        <div id="summaryAnalyst">—</div>
+      </div>
+      <div class="summary-row">
+        <div>Date of Analysis</div>
+        <div id="summaryAnalysisDate">—</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Braking Pattern Analysis</h3>
+    <div class="brake-table-wrapper">
+      <table class="brake-table" id="brakeTable">
+        <thead></thead>
+        <tbody>
+          <tr><td colspan="8">Load a run to see braking data.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Braking Curve</h3>
+    <div id="brakeChart"></div>
+  </section>
+</main>
+
 <script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
 <script>
 const API = ""; // same-origin
+const STAFF = { lp: [], cli: [] };
+const BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20];
+const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
 
 function getCriteria(){
   return {
@@ -49,6 +359,22 @@ function getCriteria(){
     from_station_equals: document.getElementById("fromStation").value || undefined,
     to_station_equals: document.getElementById("toStation").value || undefined,
   };
+}
+
+function fillSummary() {
+  const fromInput = document.getElementById("fromStation");
+  const workingDate = fromInput.dataset.firstDate || "";
+  const from = document.getElementById("fromStation").value;
+  const to = document.getElementById("toStation").value;
+  document.getElementById("summaryWorkingDate").textContent = workingDate ? formatDisplayDate(workingDate) : "—";
+  document.getElementById("summarySection").textContent = from && to ? `${from} - ${to}` : "—";
+  document.getElementById("summaryLP").textContent = document.getElementById("lpInput").value || "—";
+  document.getElementById("summaryTrain").textContent = document.getElementById("trainNumber").value || "—";
+  document.getElementById("summaryLoco").textContent = document.getElementById("locoNumber").value || "—";
+  document.getElementById("summaryNCLI").textContent = document.getElementById("ncliInput").value || "—";
+  document.getElementById("summaryAnalyst").textContent = document.getElementById("analystInput").value || "—";
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById("summaryAnalysisDate").textContent = formatDisplayDate(today);
 }
 
 async function fetchTrainMeta() {
@@ -60,26 +386,195 @@ async function fetchTrainMeta() {
     alert(j.error || "Train not found");
     return;
   }
-  document.getElementById("fromStation").value = j.from_station || "";
+  const fromInput = document.getElementById("fromStation");
+  fromInput.value = j.from_station || "";
+  delete fromInput.dataset.firstDate;
   document.getElementById("toStation").value = j.to_station || "";
   document.getElementById("dirResolved").value = (j.direction || "").toUpperCase();
   window.__resolvedDirection = (j.direction || "").toUpperCase();
+  fillSummary();
 
-  const out = {
-    note: "Resolved from base-data",
-    train_number: j.train_number,
-    train_name: j.train_name,
-    from: j.from_station, to: j.to_station,
-    departure_time: j.departure_time, arrival_time: j.arrival_time,
-    direction: j.direction
-  };
-  document.getElementById("out").textContent = "Train info:\n" + JSON.stringify(out, null, 2);
 }
 
 document.getElementById("btnFetchTrain").onclick = fetchTrainMeta;
 document.getElementById("trainNumber").addEventListener("keydown", (e) => {
   if (e.key === "Enter") fetchTrainMeta();
 });
+["trainNumber","locoNumber","lpInput","ncliInput","analystInput"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", fillSummary);
+});
+
+function optionLabel(entry) {
+  if (!entry) return "";
+  const parts = [entry.name || "", entry.cmsid ? `(${entry.cmsid})` : ""];
+  const descriptor = entry.office || entry.designation;
+  return `${parts.join(" ").trim()}${descriptor ? ` — ${descriptor}` : ""}`.trim();
+}
+
+function populateDatalist(id, entries) {
+  const dl = document.getElementById(id);
+  if (!dl) return;
+  dl.innerHTML = entries
+    .map(entry => `<option value="${entry.name || ""}">${optionLabel(entry)}</option>`)
+    .join("");
+}
+
+function formatDisplayDate(value) {
+  if (!value) return "—";
+  const parts = value.split(/[-/]/);
+  if (parts.length === 3) {
+    let [yr, mo, day] = parts;
+    if (yr.length === 4) {
+      return `${day.padStart(2, "0")}-${mo.padStart(2, "0")}-${yr}`;
+    }
+    if (day.length === 4) {
+      return `${mo.padStart(2, "0")}-${yr.padStart(2, "0")}-${day}`;
+    }
+  }
+  return value;
+}
+
+function renderBrakingTable(halts) {
+  const table = document.getElementById("brakeTable");
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+  const headerCells = ["Halt"].concat(BRAKE_OFFSETS.map(o => `${o} m`));
+  thead.innerHTML = `<tr>${headerCells.map(text => `<th>${text}</th>`).join("")}</tr>`;
+
+  if (!halts || !halts.length) {
+    tbody.innerHTML = `<tr><td colspan="${headerCells.length}">No braking data found.</td></tr>`;
+    return;
+  }
+
+  const rowsHtml = halts.map(halt => {
+    const info = `<strong>${halt.station || "Halt"}</strong><br/><small>${halt.logging_time || ""}</small>`;
+    const cells = BRAKE_OFFSETS.map(offset => {
+      const key = String(offset);
+      const reading = halt.speeds && halt.speeds[key];
+      const val = reading && typeof reading.speed === "number" ? reading.speed.toFixed(1) : "—";
+      let warnClass = "";
+      const numeric = reading && typeof reading.speed === "number" ? reading.speed : null;
+      if (numeric !== null) {
+        if (offset === 1000 && numeric > 70) warnClass = "warn";
+        if (offset === 100 && numeric > 15) warnClass = "warn";
+      }
+      return `<td class="${warnClass}">${val}</td>`;
+    }).join("");
+    return `<tr><td>${info}</td>${cells}</tr>`;
+  }).join("");
+  tbody.innerHTML = rowsHtml;
+}
+
+function renderBrakingChart(halts) {
+  const el = document.getElementById("brakeChart");
+  if (!el) return;
+  const chart = echarts.getInstanceByDom(el) || echarts.init(el);
+  if (!halts || !halts.length) {
+    chart.setOption({
+      xAxis: { type: "category", data: BRAKE_CHART_STEPS.map(o => `${o} m`), inverse: true },
+      yAxis: { type: "value", name: "Speed (km/h)" },
+      series: [],
+      title: { text: "No braking data", left: "center", top: "middle", textStyle: { color: "#888", fontSize: 14 } }
+    }, true);
+    return;
+  }
+  const series = halts.map(halt => {
+    const label = halt.station ? `${halt.station}` : `Halt ${halt.sequence}`;
+    const legend = label || `Halt ${halt.sequence}`;
+    const data = BRAKE_CHART_STEPS.map(step => {
+      if (step === 0) {
+        return 0;
+      }
+      const reading = halt.speeds && halt.speeds[String(step)];
+      if (reading && typeof reading.speed === "number") {
+        return reading.speed;
+      }
+      return null;
+    });
+    const zeroIdx = BRAKE_CHART_STEPS.indexOf(0);
+    if (zeroIdx >= 0) {
+      data[zeroIdx] = 0;
+    }
+    return {
+      name: legend,
+      type: "line",
+      smooth: true,
+      connectNulls: false,
+      data
+    };
+  });
+  chart.setOption({
+    tooltip: { trigger: "axis" },
+    legend: { top: 0 },
+    xAxis: { type: "category", data: BRAKE_CHART_STEPS.map(o => `${o} m`), inverse: false, name: "Distance before halt" },
+    yAxis: { type: "value", name: "Speed (km/h)" },
+    series,
+    title: { text: "" }
+  }, true);
+}
+
+async function loadBrakingProfile(criteria) {
+  try {
+    const resp = await fetch(`${API}/braking_profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(criteria)
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      renderBrakingTable([]);
+      renderBrakingChart([]);
+      return;
+    }
+    const halts = data.halts || [];
+    renderBrakingTable(halts);
+    renderBrakingChart(halts);
+  } catch (err) {
+    console.warn("Failed to load braking profile", err);
+    renderBrakingTable([]);
+    renderBrakingChart([]);
+  }
+}
+
+function extractWorkingDate(sample) {
+  if (!sample) return null;
+  const keys = Object.keys(sample);
+  const lowerMap = Object.fromEntries(keys.map(k => [k.toLowerCase(), k]));
+  const preferred = ["gps time", "logging time", "time"];
+  let timeKey = null;
+  for (const key of preferred) {
+    if (lowerMap[key]) {
+      timeKey = lowerMap[key];
+      break;
+    }
+  }
+  if (!timeKey) {
+    timeKey = keys.find(k => /time/i.test(k));
+  }
+  if (!timeKey) return null;
+  const raw = sample[timeKey];
+  if (!raw) return null;
+  const [datePart] = String(raw).split(/[ T]/);
+  return datePart || null;
+}
+
+async function loadStaffLookups(){
+  try {
+    const resp = await fetch(`${API}/lookup/staff`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    STAFF.lp = Array.isArray(data.lp) ? data.lp : [];
+    STAFF.cli = Array.isArray(data.cli) ? data.cli : [];
+    populateDatalist("lpOptions", STAFF.lp);
+    populateDatalist("cliOptions", STAFF.cli);
+  } catch (err) {
+    console.warn("Failed to load staff lookups", err);
+  }
+}
+loadStaffLookups();
+renderBrakingTable([]);
+renderBrakingChart([]);
 
 document.getElementById("btnUpload").onclick = async () => {
   const f = document.getElementById("csv").files[0];
@@ -87,7 +582,11 @@ document.getElementById("btnUpload").onclick = async () => {
   const fd = new FormData(); fd.append("file", f);
   const r = await fetch(`${API}/load_csv`, { method:"POST", body: fd });
   const j = await r.json();
-  document.getElementById("out").textContent = "Loaded:\n" + JSON.stringify(j,null,2);
+  if (r.ok) {
+    alert(`CSV loaded (${j.rows} rows, ${j.cols} cols)`);
+  } else {
+    alert(j.error || "Upload failed");
+  }
 };
 
 async function drawChart(criteria){
@@ -139,8 +638,20 @@ async function analyzeAndPlot(){
     body: JSON.stringify(criteria)
   });
   const j = await r.json();
-  document.getElementById("out").textContent = "Analyze result:\n" + JSON.stringify(j,null,2);
+  if (j.error) {
+    alert(j.error);
+    return;
+  }
+  const firstSample = Array.isArray(j.sample) && j.sample.length ? j.sample[0] : null;
+  const workingDate = extractWorkingDate(firstSample);
+  if (workingDate) {
+    document.getElementById("fromStation").dataset.firstDate = workingDate;
+  } else {
+    delete document.getElementById("fromStation").dataset.firstDate;
+  }
   await drawChart(criteria);
+  await loadBrakingProfile(criteria);
+  fillSummary();
 }
 
 document.getElementById("btnAnalyze").onclick = analyzeAndPlot;
@@ -159,4 +670,6 @@ document.getElementById("btnExport").onclick = async () => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+fillSummary();
 </script>
