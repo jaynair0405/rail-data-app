@@ -26,3 +26,28 @@ htmlcov/
 # Editors
 .vscode/
 .idea/
+
+# Sensitive/Generated Data - DO NOT COMMIT
+# ==========================================
+# Real telemetry CSV files (contain sensitive train data)
+*.csv
+!base-data/*.csv  # EXCEPT base-data CSVs (reference data is OK)
+!**/geo*.csv      # Allow geofence CSVs
+
+# Staff roster files (contain personal info)
+mail_staff.csv
+cli*.csv
+
+# PyInstaller build artifacts
+*.spec.bak
+RailDataApp.exe
+
+# User-generated reports
+*.pdf
+*.xlsx
+
+# Temporary files
+*.tmp
+*.log
+/tmp/
+app-data/
