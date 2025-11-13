@@ -16,11 +16,11 @@ try:  # Optional heavy deps for PDF export
     from reportlab.lib import colors  # type: ignore
     from reportlab.lib.pagesizes import A4  # type: ignore
     from reportlab.lib.styles import getSampleStyleSheet  # type: ignore
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage  # type: ignore
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak  # type: ignore
 except ImportError:
     plt = None  # type: ignore[assignment]
     SimpleDocTemplate = None  # type: ignore[assignment]
-    Paragraph = Spacer = Table = TableStyle = RLImage = None  # type: ignore[assignment]
+    Paragraph = Spacer = Table = TableStyle = RLImage = PageBreak = None  # type: ignore[assignment]
     colors = None  # type: ignore[assignment]
     A4 = None  # type: ignore[assignment]
     getSampleStyleSheet = None  # type: ignore[assignment]
@@ -1362,8 +1362,8 @@ def _last_datetime(dataset: pl.DataFrame) -> datetime | None:
 def _build_summary_details(dataset: pl.DataFrame, criteria: dict) -> dict[str, Any]:
     first_dt = _first_datetime(dataset)
     last_dt = _last_datetime(dataset)
-    working_date = first_dt.date().isoformat() if isinstance(first_dt, datetime) else "-"
-    analysis_date = datetime.utcnow().date().isoformat()
+    working_date = first_dt.strftime("%d/%m/%Y") if isinstance(first_dt, datetime) else "-"
+    analysis_date = datetime.utcnow().strftime("%d/%m/%Y")
     start_time_str = first_dt.strftime("%H:%M") if isinstance(first_dt, datetime) else "-"
     end_time_str = last_dt.strftime("%H:%M") if isinstance(last_dt, datetime) else "-"
     return {
@@ -1423,49 +1423,70 @@ def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
     return buf
 
 
-def _render_brake_curve_image(halts: list[dict[str, Any]]) -> io.BytesIO | None:
+def _render_brake_curve_images(curve_data: list[dict[str, Any]]) -> list[io.BytesIO]:
+    """
+    Render smooth braking curves using full telemetry data.
+    Creates multiple charts (6 halts per chart) for PDF.
+
+    Args:
+        curve_data: Output from _braking_profile_full_curve() with curve_data field
+
+    Returns:
+        List of PNG image buffers (one per 6 halts)
+    """
     if plt is None:
         raise RuntimeError("matplotlib is required for PDF export. Please install it.")
-    if not halts:
-        return None
-    steps = sorted(set(BRAKE_CHART_STEPS + [0]), reverse=True)
-    x = list(range(len(steps)))
-    fig, ax = plt.subplots(figsize=(8, 3))
-    color_map = plt.cm.tab10(np.linspace(0, 1, min(len(halts), 6)))
-    for idx, halt in enumerate(halts[:6]):
-        color = tuple(color_map[idx])
-        speeds = []
-        for step in steps:
-            reading = (halt.get("speeds") or {}).get(str(step))
-            speeds.append(reading.get("speed") if isinstance(reading, dict) else None)
-        label = halt.get("station") or f"Halt {halt.get('sequence')}"
-        valid = [(xi, yi) for xi, yi in zip(x, speeds) if yi is not None]
-        if len(valid) >= 2:
-            vx, vy = zip(*valid)
-            fine_x = np.linspace(vx[0], vx[-1], max(50, len(vx) * 10))
-            fine_y = np.interp(fine_x, vx, vy)
-            ax.plot(fine_x, fine_y, color=color, linewidth=1.6, label=label)
-            ax.scatter(vx, vy, color=color, s=18)
-        else:
-            ax.plot(x, [v if v is not None else float("nan") for v in speeds], color=color, linewidth=1.6, label=label)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{s} m" for s in steps])
-    ax.set_xlabel("Distance before halt")
-    ax.set_ylabel("Speed (km/h)")
-    ax.grid(True, linestyle="--", alpha=0.3)
-    ax.legend(fontsize=7)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="PNG", dpi=150)
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+    if not curve_data:
+        return []
+
+    images: list[io.BytesIO] = []
+
+    # Process in batches of 6 halts
+    for batch_start in range(0, len(curve_data), 6):
+        batch = curve_data[batch_start:batch_start + 6]
+
+        fig, ax = plt.subplots(figsize=(8, 2.5))  # Shorter for 2-per-page layout
+        color_map = plt.cm.tab10(np.linspace(0, 1, len(batch)))
+
+        for idx, halt in enumerate(batch):
+            color = tuple(color_map[idx])
+            curve = halt.get("curve_data", {})
+            distances = curve.get("distances", [])
+            speeds = curve.get("speeds", [])
+
+            # Filter out null speeds
+            valid_pairs = [(d, s) for d, s in zip(distances, speeds) if s is not None]
+
+            if len(valid_pairs) >= 2:
+                d, s = zip(*valid_pairs)
+                label = halt.get("station") or f"Halt {halt.get('sequence')}"
+                ax.plot(d, s, color=color, linewidth=1.8, label=label, alpha=0.85)
+
+        # X-axis: 100m intervals from 1000m to 0m
+        ax.set_xticks([1000, 900, 800, 700, 600, 500, 400, 300, 200, 100, 0])
+        ax.set_xticklabels(['1000', '900', '800', '700', '600', '500', '400', '300', '200', '100', '0'])
+        ax.set_xlabel("Distance before halt (m)", fontsize=9)
+        ax.set_ylabel("Speed (km/h)", fontsize=9)
+        ax.set_xlim(1050, -50)  # Right-to-left (1000m → 0m)
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.legend(fontsize=7, loc='upper right')
+        ax.tick_params(labelsize=8)
+        fig.tight_layout()
+
+        # Save to buffer
+        buf = io.BytesIO()
+        fig.savefig(buf, format="PNG", dpi=100)
+        plt.close(fig)
+        buf.seek(0)
+        images.append(buf)
+
+    return images
 
 
 def _render_pdf_report(
     summary: dict[str, Any],
     speed_chart: io.BytesIO | None,
-    brake_chart: io.BytesIO | None,
+    brake_charts: list[io.BytesIO],
     halts: list[dict[str, Any]],
     brake_tests: dict[str, Any],
 ) -> io.BytesIO:
@@ -1508,10 +1529,26 @@ def _render_pdf_report(
         story.append(RLImage(speed_chart, width=doc.width, height=200))
         story.append(Spacer(1, 16))
 
-    if brake_chart:
-        story.append(Paragraph("Braking Curves", styles["Heading2"]))
-        brake_chart.seek(0)
-        story.append(RLImage(brake_chart, width=doc.width, height=200))
+    # Add braking curve charts (2 per page)
+    if brake_charts:
+        story.append(PageBreak())
+        total_halts = len(halts)
+        for idx, chart_img in enumerate(brake_charts):
+            # Add page break after every 2 charts (but not before first chart)
+            if idx > 0 and idx % 2 == 0:
+                story.append(PageBreak())
+            elif idx > 0:
+                story.append(Spacer(1, 12))  # Small space between charts on same page
+
+            # Chart title with halt range
+            halt_start = idx * 6 + 1
+            halt_end = min((idx + 1) * 6, total_halts)
+            title = f"Braking Curves (Halts {halt_start}-{halt_end})" if total_halts > 6 else "Braking Curves"
+            story.append(Paragraph(title, styles["Heading3"]))
+
+            chart_img.seek(0)
+            story.append(RLImage(chart_img, width=doc.width, height=155))
+
         story.append(Spacer(1, 16))
 
     if halts:
@@ -1576,13 +1613,16 @@ def export_pdf(criteria: dict = Body(...)):
         chart_payload = _build_chart_payload(filtered, criteria)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    halts = _braking_profile(filtered, BRAKE_OFFSETS)
+
+    # Use unified function for both table and chart (same filtering)
+    unified_data = _braking_profile_full_curve(filtered, BRAKE_OFFSETS)
+
     brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
     summary = _build_summary_details(filtered, criteria)
     try:
         speed_chart = _render_speed_chart_image(chart_payload)
-        brake_chart = _render_brake_curve_image(halts)
-        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_chart, halts, brake_tests)
+        brake_charts = _render_brake_curve_images(unified_data)  # Returns list of images
+        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
     filename = f"rtis_report_{int(time.time())}.pdf"
@@ -2096,6 +2136,140 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
                 "delta_m": diff,
             }
         results.append(halt_entry)
+    return results
+
+
+def _braking_profile_full_curve(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
+    """
+    Extract braking data with full curve points for smooth PDF charts.
+
+    Filtering rules:
+    - Minimum 200m spacing between halts
+    - Must have >= 1000m approach data
+
+    Returns unified structure with:
+    - Discrete offsets (for PDF table)
+    - Full curve data (for smooth PDF charts)
+    """
+    if df.is_empty():
+        return []
+    speed_col = _find_speed_column(df.columns)
+    dist_col = _find_distance_column(df.columns)
+    if not speed_col or not dist_col:
+        return []
+
+    speeds = (
+        df[speed_col]
+        .cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .to_list()
+    )
+    dist_steps = (
+        df[dist_col]
+        .cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .to_list()
+    )
+    dist_steps = [max(0.0, x or 0.0) for x in dist_steps]
+    cumulative: list[float] = []
+    running = 0.0
+    for step in dist_steps:
+        running += step
+        cumulative.append(running)
+
+    station_col = _first_matching_column(df.columns, "STATION", "CODE") or _first_matching_column(df.columns, "STATION")
+    if station_col:
+        stations = [str(val).strip() if val is not None else None for val in df[station_col].to_list()]
+    else:
+        stations = [None] * len(speeds)
+    time_col = _find_time_column(df.columns)
+    times = df[time_col].to_list() if time_col else [None] * len(speeds)
+    times = [_stringify_time(t) for t in times]
+
+    first_move_idx = next((i for i, sp in enumerate(speeds) if sp and sp > 0.5), None)
+    if first_move_idx is None:
+        return []
+
+    # Find all halts with 200m spacing
+    halts: list[int] = []
+    last_halt_distance: float | None = None
+    for idx in range(first_move_idx + 1, len(speeds)):
+        prev_speed = speeds[idx - 1]
+        current_speed = speeds[idx]
+        if current_speed <= 0.5 and prev_speed > 0.5:
+            halt_distance = cumulative[idx]
+            if last_halt_distance is not None and (halt_distance - last_halt_distance) < 200.0:
+                continue
+            halts.append(idx)
+            last_halt_distance = halt_distance
+
+    results: list[dict[str, Any]] = []
+    for seq, halt_idx in enumerate(halts, start=1):
+        halt_dist = cumulative[halt_idx]
+        halt_station = stations[halt_idx]
+        display_station = str(halt_station).strip() if halt_station else f"{halt_dist:.0f} m"
+
+        # Calculate distance to halt for all points
+        dist_to_halt: list[float] = [0.0] * (halt_idx + 1)
+        running_back = 0.0
+        for idx in range(halt_idx - 1, -1, -1):
+            step = dist_steps[idx + 1] if idx + 1 < len(dist_steps) else 0.0
+            running_back += step
+            dist_to_halt[idx] = running_back
+
+        # Check if we have at least 1000m of approach data
+        max_approach = dist_to_halt[0] if dist_to_halt else 0.0
+        if max_approach < 1000.0:
+            # Skip this halt - insufficient approach data
+            continue
+
+        # Extract discrete offsets for table
+        speeds_dict = {}
+        for offset in offsets:
+            target = float(offset)
+            chosen_idx = halt_idx
+            probe = halt_idx
+            while probe >= 0 and dist_to_halt[probe] <= target:
+                chosen_idx = probe
+                probe -= 1
+            if chosen_idx < 0:
+                chosen_idx = 0
+            diff = abs(target - dist_to_halt[chosen_idx])
+            speeds_dict[str(offset)] = {
+                "speed": speeds[chosen_idx],
+                "time": times[chosen_idx],
+                "station": stations[chosen_idx],
+                "delta_m": diff,
+            }
+
+        # Extract ALL points within 1000m for smooth curve
+        curve_distances: list[float] = []
+        curve_speeds: list[float | None] = []
+
+        for idx in range(halt_idx + 1):
+            d = dist_to_halt[idx]
+            if d <= 1000.0:
+                curve_distances.append(d)
+                curve_speeds.append(speeds[idx])
+
+        # Reverse so distance goes from 1000m → 0m (not 0m → 1000m)
+        curve_distances.reverse()
+        curve_speeds.reverse()
+
+        halt_entry = {
+            "sequence": seq,
+            "index": halt_idx,
+            "station": display_station,
+            "logging_time": times[halt_idx],
+            "distance_m": halt_dist,
+            "speeds": speeds_dict,  # For table
+            "curve_data": {  # For smooth chart
+                "distances": curve_distances,
+                "speeds": curve_speeds
+            }
+        }
+        results.append(halt_entry)
+
     return results
 
 
