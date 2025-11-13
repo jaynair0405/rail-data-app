@@ -2378,3 +2378,14 @@ def _brake_tests(df: pl.DataFrame, start_station: str | None, direction: str | N
         "feel": summarize(feel_raw),
         "power": summarize(power_raw),
     }
+
+
+# ------------------------------
+# Run Server
+# ------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    print("\n[SERVER] Starting uvicorn on http://localhost:8765")
+    print("[SERVER] Press Ctrl+C to stop")
+    print("[SERVER] Open browser: http://localhost:8765/ui/\n")
+    uvicorn.run(app, host="0.0.0.0", port=8765)
