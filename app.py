@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import polars as pl
 import pandas as pd
-import io, time, re, math
+import io, time, re, math, sys
 from typing import Dict, Any
 from datetime import datetime
 from pathlib import Path
@@ -43,7 +43,12 @@ DF: pl.DataFrame | None = None
 # ------------------------------
 # Base-Data: Trains (robust loader)
 # ------------------------------
-BASE_DIR = Path(__file__).parent
+# Detect if running as PyInstaller EXE or as script
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent  # EXE: use executable location
+else:
+    BASE_DIR = Path(__file__).parent  # Script: use script location
+
 BASE_DATA_DIR = BASE_DIR / "base-data"
 
 TRAINS_DF: pl.DataFrame | None = None
