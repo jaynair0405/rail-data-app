@@ -192,6 +192,19 @@
     color: #5a5a5a;
     margin-top: 6px;
   }
+  .tests-table th,
+  .tests-table td {
+    text-align: center;
+  }
+  .status-pass {
+    color: #1c8c4e;
+    font-weight: 600;
+  }
+  .status-fail,
+  .warn {
+    color: #d7263d;
+    font-weight: 600;
+  }
   #brakeChart {
     width: 100%;
     height: 320px;
@@ -281,7 +294,7 @@
     <h3>Actions</h3>
     <div class="actions">
       <button id="btnAnalyze">Analyze</button>
-      <button id="btnExport" class="secondary">Export Excel</button>
+      <button id="btnExport" class="secondary">Export PDF</button>
     </div>
   </section>
 
@@ -344,6 +357,25 @@
     <h3>Braking Curve</h3>
     <div id="brakeChart"></div>
   </section>
+
+  <section class="card">
+    <h3>Brake Tests</h3>
+    <div class="brake-table-wrapper">
+      <table class="brake-table tests-table" id="brakeTestsTable">
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>Start Speed (km/h)</th>
+            <th>Dropped To (km/h)</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="4">No tests run.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
@@ -358,6 +390,12 @@ function getCriteria(){
     direction_equals: window.__resolvedDirection || undefined,
     from_station_equals: document.getElementById("fromStation").value || undefined,
     to_station_equals: document.getElementById("toStation").value || undefined,
+    train_number: document.getElementById("trainNumber").value || undefined,
+    loco_number: document.getElementById("locoNumber").value || undefined,
+    coach_type: document.getElementById("coachType").value || undefined,
+    lp_name: document.getElementById("lpInput").value || undefined,
+    ncli_name: document.getElementById("ncliInput").value || undefined,
+    analyst_name: document.getElementById("analystInput").value || undefined,
   };
 }
 
@@ -457,7 +495,7 @@ function renderBrakingTable(halts) {
       const numeric = reading && typeof reading.speed === "number" ? reading.speed : null;
       if (numeric !== null) {
         if (offset === 1000 && numeric > 70) warnClass = "warn";
-        if (offset === 100 && numeric > 15) warnClass = "warn";
+        if (offset === 100 && numeric > 10) warnClass = "warn";
       }
       return `<td class="${warnClass}">${val}</td>`;
     }).join("");
@@ -514,6 +552,39 @@ function renderBrakingChart(halts) {
   }, true);
 }
 
+function formatSpeedCell(value) {
+  if (value === null || value === undefined) return "—";
+  return Number(value).toFixed(1);
+}
+
+function renderBrakeTests(results) {
+  const table = document.getElementById("brakeTestsTable");
+  if (!table) return;
+  const tbody = table.querySelector("tbody");
+  const rows = [
+    { key: "feel", label: "Brake Feel Test" },
+    { key: "power", label: "Brake Power Test" },
+  ];
+  if (!results) {
+    tbody.innerHTML = `<tr><td colspan="4">No tests run.</td></tr>`;
+    return;
+  }
+  const html = rows.map(row => {
+    const data = results[row.key] || {};
+    const start = data.start_speed != null ? formatSpeedCell(data.start_speed) : "—";
+    const end = data.end_speed != null ? formatSpeedCell(data.end_speed) : "—";
+    const status = (data.status || "NOT RUN").toUpperCase();
+    const cls = status === "PASS" ? "status-pass" : status === "FAIL" ? "status-fail" : "";
+    return `<tr>
+      <td>${row.label}</td>
+      <td>${start}</td>
+      <td>${end}</td>
+      <td class="${cls}">${status}</td>
+    </tr>`;
+  }).join("");
+  tbody.innerHTML = html;
+}
+
 async function loadBrakingProfile(criteria) {
   try {
     const resp = await fetch(`${API}/braking_profile`, {
@@ -534,6 +605,25 @@ async function loadBrakingProfile(criteria) {
     console.warn("Failed to load braking profile", err);
     renderBrakingTable([]);
     renderBrakingChart([]);
+  }
+}
+
+async function loadBrakeTests(criteria) {
+  try {
+    const resp = await fetch(`${API}/brake_tests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(criteria)
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      renderBrakeTests(null);
+      return;
+    }
+    renderBrakeTests(data);
+  } catch (err) {
+    console.warn("Failed to load brake tests", err);
+    renderBrakeTests(null);
   }
 }
 
@@ -575,6 +665,7 @@ async function loadStaffLookups(){
 loadStaffLookups();
 renderBrakingTable([]);
 renderBrakingChart([]);
+renderBrakeTests(null);
 
 document.getElementById("btnUpload").onclick = async () => {
   const f = document.getElementById("csv").files[0];
@@ -651,24 +742,30 @@ async function analyzeAndPlot(){
   }
   await drawChart(criteria);
   await loadBrakingProfile(criteria);
+  await loadBrakeTests(criteria);
   fillSummary();
 }
 
 document.getElementById("btnAnalyze").onclick = analyzeAndPlot;
 
 document.getElementById("btnExport").onclick = async () => {
-  const r = await fetch(`${API}/export`, {
-    method:"POST",
-    headers: { "Content-Type":"application/json" },
-    body: JSON.stringify(getCriteria())
-  });
-  if(!r.ok){ const t = await r.text(); alert("Export failed:\n" + t); return; }
-  const blob = await r.blob();
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "filtered.xlsx";
-  a.click();
-  URL.revokeObjectURL(a.href);
+  try {
+    const r = await fetch(`${API}/export_pdf`, {
+      method:"POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify(getCriteria())
+    });
+    if(!r.ok){ const t = await r.text(); alert("Export failed:\n" + t); return; }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "rtis_report.pdf";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    alert("Export failed. Please try again.");
+    console.error(err);
+  }
 };
 
 fillSummary();

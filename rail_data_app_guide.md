@@ -46,6 +46,8 @@ pandas
 xlsxwriter
 pyarrow
 python-multipart
+matplotlib
+reportlab
 ```
 
 ---
@@ -57,6 +59,7 @@ Current behavior highlights:
 - Train metadata is hydrated from `base-data/train_with_from_to_stations*.csv` and geofences from `geo locations - Sheet1.csv`, enabling `/train_info` plus the geofence-aware start/end slicing logic.
 - Filtering honors direction, optional start/end station overrides, and supports Excel export + chart aggregation. Destination slicing now prefers the first `<1 km/h` sample inside the end geofence (falling back to the slowest sample if the train never stops) so charts always run down to a true halt.
 - `/braking_profile` analyses each halt between the selected start/end stations, skips duplicate halts closer than 200 m, and reports approach speeds 1000/400/300/200/100/50/20 m before every stop. The UI renders this both as a “Braking Pattern Analysis” table and a companion multi-series braking curve so reviewers can visualize how each driver eased into every halt.
+- `/brake_tests` inspects the departure segment for each run and flags Brake Feel (Pune: 7–16 km/h, others: 10–16 km/h) and Brake Power (MMR: 45–100 km/h, others: 45–70 km/h) events, requiring ≥45 % speed drop within the origin geofence. Results feed a compact PASS/FAIL table beneath the braking charts.
 - `/debug/base_data` exposes the loader status, while `/train_info` is used by the UI before running analysis.
 
 Refer to `app.py` for the full FastAPI implementation; it now weighs in at ~1100 lines with the geofence helpers, CSV cleaning utilities, and intelligent route selection logic.

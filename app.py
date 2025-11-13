@@ -7,6 +7,23 @@ import io, time, re, math
 from typing import Dict, Any
 from datetime import datetime
 from pathlib import Path
+import numpy as np
+
+try:  # Optional heavy deps for PDF export
+    import matplotlib  # type: ignore
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # type: ignore
+    from reportlab.lib import colors  # type: ignore
+    from reportlab.lib.pagesizes import A4  # type: ignore
+    from reportlab.lib.styles import getSampleStyleSheet  # type: ignore
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage  # type: ignore
+except ImportError:
+    plt = None  # type: ignore[assignment]
+    SimpleDocTemplate = None  # type: ignore[assignment]
+    Paragraph = Spacer = Table = TableStyle = RLImage = None  # type: ignore[assignment]
+    colors = None  # type: ignore[assignment]
+    A4 = None  # type: ignore[assignment]
+    getSampleStyleSheet = None  # type: ignore[assignment]
 
 # ------------------------------
 # App & Static UI
@@ -49,6 +66,9 @@ STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
 BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20]
+BRAKE_EVENT_TOLERANCE = 0.3
+BRAKE_REQUIRED_DROP = 45.0
+BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
 
 MAIL_STAFF: list[dict[str, Any]] = []
 CLI_STAFF: list[dict[str, Any]] = []
@@ -1223,20 +1243,16 @@ def export(criteria: dict = Body(...)):
 # ------------------------------
 # Chart Data
 # ------------------------------
-@app.post("/chart_data")
-def chart_data(criteria: dict = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    out = apply_criteria(DF, criteria)
-    if out.height == 0:
-        return {"labels": [], "values": [], "yLabel": "Speed (km/h)"}
+def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any]:
+    if dataset.height == 0:
+        return {"labels": [], "values": [], "yLabel": "Speed (km/h)", "restrictions": [], "mps": []}
 
-    ts_col = _find_time_column(out.columns)
-    sp_col = _find_speed_column(out.columns)
-    lat_col = _first_matching_column(out.columns, "LAT", "ITUDE") or _first_matching_column(out.columns, "LAT")
-    lon_col = _first_matching_column(out.columns, "LON", "ITUDE") or _first_matching_column(out.columns, "LON")
+    ts_col = _find_time_column(dataset.columns)
+    sp_col = _find_speed_column(dataset.columns)
+    lat_col = _first_matching_column(dataset.columns, "LAT", "ITUDE") or _first_matching_column(dataset.columns, "LAT")
+    lon_col = _first_matching_column(dataset.columns, "LON", "ITUDE") or _first_matching_column(dataset.columns, "LON")
     if not ts_col or not sp_col:
-        return JSONResponse({"error": "required columns not found"}, status_code=400)
+        raise ValueError("required columns not found")
 
     route_key = _route_key(criteria.get("from_station_equals"), criteria.get("to_station_equals"))
     direction = criteria.get("direction_equals")
@@ -1245,7 +1261,7 @@ def chart_data(criteria: dict = Body(...)):
     lat_expr = pl.col(lat_col).cast(pl.Float64, strict=False) if lat_col else pl.lit(None, dtype=pl.Float64)
     lon_expr = pl.col(lon_col).cast(pl.Float64, strict=False) if lon_col else pl.lit(None, dtype=pl.Float64)
     enriched = (
-        out.with_columns(
+        dataset.with_columns(
             _parse_datetime_expr(ts_col).alias("_TS"),
             pl.col(sp_col).cast(pl.Float64, strict=False).alias("_SPD"),
             lat_expr.alias("_LAT_FLOAT"),
@@ -1284,7 +1300,20 @@ def chart_data(criteria: dict = Body(...)):
         "yLabel": "Speed (km/h)",
         "restrictions": segments,
         "mps": mps_values,
+        "limit_values": limit_values,
     }
+
+
+@app.post("/chart_data")
+def chart_data(criteria: dict = Body(...)):
+    if DF is None:
+        return JSONResponse({"error": "no data loaded"}, status_code=400)
+    out = apply_criteria(DF, criteria)
+    try:
+        payload = _build_chart_payload(out, criteria)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return payload
 
 @app.post("/braking_profile")
 def braking_profile(criteria: dict = Body(...)):
@@ -1293,6 +1322,275 @@ def braking_profile(criteria: dict = Body(...)):
     filtered = apply_criteria(DF, criteria)
     halts = _braking_profile(filtered, BRAKE_OFFSETS)
     return {"offsets": BRAKE_OFFSETS, "halts": halts}
+
+
+@app.post("/brake_tests")
+def brake_tests(criteria: dict = Body(...)):
+    if DF is None:
+        return JSONResponse({"error": "no data loaded"}, status_code=400)
+    filtered = apply_criteria(DF, criteria)
+    start_station = criteria.get("from_station_equals")
+    direction = criteria.get("direction_equals")
+    summary = _brake_tests(filtered, start_station, direction)
+    return summary
+
+
+def _first_datetime(dataset: pl.DataFrame) -> datetime | None:
+    ts_col = _find_time_column(dataset.columns)
+    if not ts_col:
+        return None
+    series = (
+        dataset.select(_parse_datetime_expr(ts_col).alias("_TS"))
+        .drop_nulls()
+        .get_column("_TS")
+    )
+    return series[0] if len(series) else None
+
+
+def _last_datetime(dataset: pl.DataFrame) -> datetime | None:
+    ts_col = _find_time_column(dataset.columns)
+    if not ts_col:
+        return None
+    series = (
+        dataset.select(_parse_datetime_expr(ts_col).alias("_TS"))
+        .drop_nulls()
+        .get_column("_TS")
+    )
+    return series[-1] if len(series) else None
+
+
+def _build_summary_details(dataset: pl.DataFrame, criteria: dict) -> dict[str, Any]:
+    first_dt = _first_datetime(dataset)
+    last_dt = _last_datetime(dataset)
+    working_date = first_dt.date().isoformat() if isinstance(first_dt, datetime) else "-"
+    analysis_date = datetime.utcnow().date().isoformat()
+    start_time_str = first_dt.strftime("%H:%M") if isinstance(first_dt, datetime) else "-"
+    end_time_str = last_dt.strftime("%H:%M") if isinstance(last_dt, datetime) else "-"
+    return {
+        "working_date": working_date,
+        "analysis_date": analysis_date,
+        "train_number": criteria.get("train_number"),
+        "loco_number": criteria.get("loco_number"),
+        "coach_type": criteria.get("coach_type"),
+        "lp_name": criteria.get("lp_name"),
+        "ncli_name": criteria.get("ncli_name"),
+        "analyst_name": criteria.get("analyst_name"),
+        "from_station": criteria.get("from_station_equals"),
+        "to_station": criteria.get("to_station_equals"),
+        "direction": criteria.get("direction_equals"),
+        "row_count": dataset.height,
+        "start_time": start_time_str,
+        "end_time": end_time_str,
+    }
+
+
+def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
+    if plt is None:
+        raise RuntimeError("matplotlib is required for PDF export. Please install it.")
+    labels = payload.get("labels") or []
+    values = payload.get("values") or []
+    if not labels or not values:
+        return None
+    x = list(range(len(labels)))
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.plot(x, values, color="#0c6cf2", linewidth=1.6)
+    limit_vals = payload.get("limit_values") or []
+    if len(limit_vals) == len(x) and any(v is not None for v in limit_vals):
+        limit_series = [v if v is not None else float("nan") for v in limit_vals]
+        ax.fill_between(x, 0, limit_series, color="salmon", alpha=0.2, step="mid", label="PSR")
+        ax.plot(x, limit_series, color="#d9534f", linewidth=1.2, linestyle="--")
+    mps = payload.get("mps") or []
+    if any(v is not None for v in mps):
+        ax.plot(x, [v if v is not None else float("nan") for v in mps], label="MPS", color="#ffa500", linewidth=1.2)
+    ax.set_ylabel("Speed (km/h)")
+    ax.set_xlabel("Time")
+    tick_count = min(6, len(labels))
+    if tick_count > 0:
+        step = max(1, len(labels) // tick_count)
+        ax.set_xticks(x[::step])
+        ax.set_xticklabels(
+            [labels[i].split(" ")[-1] for i in range(0, len(labels), step)],
+            rotation=45,
+            ha="right",
+            fontsize=7,
+        )
+    ax.grid(True, linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="PNG", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _render_brake_curve_image(halts: list[dict[str, Any]]) -> io.BytesIO | None:
+    if plt is None:
+        raise RuntimeError("matplotlib is required for PDF export. Please install it.")
+    if not halts:
+        return None
+    steps = sorted(set(BRAKE_CHART_STEPS + [0]), reverse=True)
+    x = list(range(len(steps)))
+    fig, ax = plt.subplots(figsize=(8, 3))
+    color_map = plt.cm.tab10(np.linspace(0, 1, min(len(halts), 6)))
+    for idx, halt in enumerate(halts[:6]):
+        color = tuple(color_map[idx])
+        speeds = []
+        for step in steps:
+            reading = (halt.get("speeds") or {}).get(str(step))
+            speeds.append(reading.get("speed") if isinstance(reading, dict) else None)
+        label = halt.get("station") or f"Halt {halt.get('sequence')}"
+        valid = [(xi, yi) for xi, yi in zip(x, speeds) if yi is not None]
+        if len(valid) >= 2:
+            vx, vy = zip(*valid)
+            fine_x = np.linspace(vx[0], vx[-1], max(50, len(vx) * 10))
+            fine_y = np.interp(fine_x, vx, vy)
+            ax.plot(fine_x, fine_y, color=color, linewidth=1.6, label=label)
+            ax.scatter(vx, vy, color=color, s=18)
+        else:
+            ax.plot(x, [v if v is not None else float("nan") for v in speeds], color=color, linewidth=1.6, label=label)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{s} m" for s in steps])
+    ax.set_xlabel("Distance before halt")
+    ax.set_ylabel("Speed (km/h)")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="PNG", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+def _render_pdf_report(
+    summary: dict[str, Any],
+    speed_chart: io.BytesIO | None,
+    brake_chart: io.BytesIO | None,
+    halts: list[dict[str, Any]],
+    brake_tests: dict[str, Any],
+) -> io.BytesIO:
+    if SimpleDocTemplate is None:
+        raise RuntimeError("reportlab is required for PDF export. Please install it.")
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("CR • RTIS Analysis Report", styles["Title"]))
+    story.append(Spacer(1, 12))
+
+    summary_rows = [
+        ["Date of Working", summary.get("working_date") or "-"],
+        ["Date of Analysis", summary.get("analysis_date") or "-"],
+        ["Section", f"{summary.get('from_station') or '-'} → {summary.get('to_station') or '-'}"],
+        ["Train Number", summary.get("train_number") or "-"],
+        ["Loco Number", summary.get("loco_number") or "-"],
+        ["Coach Type", summary.get("coach_type") or "-"],
+        ["LP", summary.get("lp_name") or "-"],
+        ["NCLI", summary.get("ncli_name") or "-"],
+        ["Analyzed By", summary.get("analyst_name") or "-"],
+        ["Rows Analyzed", str(summary.get("row_count") or 0)],
+        ["Start Time", summary.get("start_time") or "-"],
+        ["End Time", summary.get("end_time") or "-"],
+    ]
+    summary_table = Table(summary_rows, colWidths=[180, 360])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(summary_table)
+    story.append(Spacer(1, 16))
+
+    if speed_chart:
+        story.append(Paragraph("Speed Profile", styles["Heading2"]))
+        speed_chart.seek(0)
+        story.append(RLImage(speed_chart, width=doc.width, height=200))
+        story.append(Spacer(1, 16))
+
+    if brake_chart:
+        story.append(Paragraph("Braking Curves", styles["Heading2"]))
+        brake_chart.seek(0)
+        story.append(RLImage(brake_chart, width=doc.width, height=200))
+        story.append(Spacer(1, 16))
+
+    if halts:
+        story.append(Paragraph("Braking Pattern Table", styles["Heading2"]))
+        header = ["Halt"] + [f"{offset} m" for offset in BRAKE_OFFSETS] + ["0 m"]
+        data = [header]
+        for halt in halts[:8]:
+            row = [halt.get("station") or f"Halt {halt.get('sequence')}"]
+            for offset in BRAKE_OFFSETS:
+                reading = (halt.get("speeds") or {}).get(str(offset))
+                if reading and isinstance(reading.get("speed"), (int, float)):
+                    row.append(f"{reading['speed']:.1f}")
+                else:
+                    row.append("—")
+            row.append("0.0")
+            data.append(row)
+        col_count = len(header)
+        brake_table = Table(
+            data,
+            colWidths=[120] + [ (doc.width - 120) / (col_count - 1) ] * (col_count - 1),
+        )
+        brake_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(brake_table)
+        story.append(Spacer(1, 16))
+
+    if brake_tests:
+        story.append(Paragraph("Brake Tests", styles["Heading2"]))
+        rows = [["Test", "Start Speed (km/h)", "Dropped To (km/h)", "Status"]]
+        for key, label in (("feel", "Brake Feel"), ("power", "Brake Power")):
+            data = brake_tests.get(key) or {}
+            rows.append([
+                label,
+                f"{data.get('start_speed'):.1f}" if isinstance(data.get("start_speed"), (int, float)) else "—",
+                f"{data.get('end_speed'):.1f}" if isinstance(data.get("end_speed"), (int, float)) else "—",
+                data.get("status", "NOT RUN"),
+            ])
+        tests_table = Table(rows, colWidths=[140, 120, 120, 120])
+        tests_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        story.append(tests_table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+@app.post("/export_pdf")
+def export_pdf(criteria: dict = Body(...)):
+    if DF is None:
+        return JSONResponse({"error": "no data loaded"}, status_code=400)
+    filtered = apply_criteria(DF, criteria)
+    if filtered.height == 0:
+        return JSONResponse({"error": "no data matches the selected criteria"}, status_code=400)
+    try:
+        chart_payload = _build_chart_payload(filtered, criteria)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    halts = _braking_profile(filtered, BRAKE_OFFSETS)
+    brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
+    summary = _build_summary_details(filtered, criteria)
+    try:
+        speed_chart = _render_speed_chart_image(chart_payload)
+        brake_chart = _render_brake_curve_image(halts)
+        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_chart, halts, brake_tests)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    filename = f"rtis_report_{int(time.time())}.pdf"
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ------------------------------
@@ -1799,3 +2097,105 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
             }
         results.append(halt_entry)
     return results
+
+
+def _detect_brake_event(
+    speeds: list[float],
+    mask: list[bool],
+    min_speed: float,
+    max_speed: float,
+    drop_percent: float,
+) -> dict[str, Any]:
+    n = len(speeds)
+    for idx in range(n - 1):
+        if not mask[idx]:
+            continue
+        start_speed = speeds[idx]
+        next_speed = speeds[idx + 1]
+        if not (min_speed < start_speed < max_speed):
+            continue
+        if next_speed >= start_speed - BRAKE_EVENT_TOLERANCE:
+            continue
+        min_val = next_speed
+        end_idx = idx + 1
+        probe = idx + 1
+        while probe < n and mask[probe]:
+            current = speeds[probe]
+            if current < min_val:
+                min_val = current
+                end_idx = probe
+            ahead = probe + 1
+            if ahead >= n or not mask[ahead]:
+                break
+            if speeds[ahead] > current + BRAKE_EVENT_TOLERANCE:
+                break
+            probe += 1
+        drop = ((start_speed - min_val) / start_speed) * 100 if start_speed else 0.0
+        if drop >= drop_percent:
+            return {
+                "status": "PASS",
+                "start_index": idx,
+                "end_index": end_idx,
+                "start_speed": start_speed,
+                "end_speed": min_val,
+                "drop_percent": drop,
+            }
+    return {
+        "status": "FAIL",
+        "start_index": -1,
+        "end_index": -1,
+        "start_speed": None,
+        "end_speed": None,
+        "drop_percent": None,
+    }
+
+
+def _brake_tests(df: pl.DataFrame, start_station: str | None, direction: str | None) -> dict[str, Any]:
+    if df.is_empty() or not start_station:
+        return {
+            "feel": {"status": "NOT RUN"},
+            "power": {"status": "NOT RUN"},
+        }
+    speed_col = _find_speed_column(df.columns)
+    if not speed_col:
+        return {
+            "feel": {"status": "NOT RUN"},
+            "power": {"status": "NOT RUN"},
+        }
+    speeds = (
+        df[speed_col]
+        .cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .to_list()
+    )
+    station_col = _first_matching_column(df.columns, "STATION", "CODE") or _first_matching_column(df.columns, "STATION")
+    stations = df[station_col].cast(pl.Utf8).to_list() if station_col else [None] * len(speeds)
+    times_col = _find_time_column(df.columns)
+    times = df[times_col].to_list() if times_col else [None] * len(speeds)
+    mask = [True] * len(speeds)
+
+    def summarize(result: dict[str, Any]) -> dict[str, Any]:
+        start_idx = result.get("start_index", -1)
+        end_idx = result.get("end_index", -1)
+        payload = {
+            "status": result.get("status", "FAIL"),
+            "start_speed": result.get("start_speed"),
+            "end_speed": result.get("end_speed"),
+            "drop_percent": result.get("drop_percent"),
+        }
+        if start_idx >= 0 and start_idx < len(times):
+            payload["start_time"] = _stringify_time(times[start_idx])
+        if end_idx >= 0 and end_idx < len(times):
+            payload["end_time"] = _stringify_time(times[end_idx])
+        return payload
+
+    start_norm = _norm_literal(start_station)
+    feel_min, feel_max = (7.0, 16.0) if start_norm == "PUNE" else (10.0, 16.0)
+    power_min, power_max = (45.0, 100.0) if start_norm == "MMR" else (45.0, 70.0)
+
+    feel_raw = _detect_brake_event(speeds, mask, feel_min, feel_max, BRAKE_REQUIRED_DROP)
+    power_raw = _detect_brake_event(speeds, mask, power_min, power_max, BRAKE_REQUIRED_DROP)
+    return {
+        "feel": summarize(feel_raw),
+        "power": summarize(power_raw),
+    }
