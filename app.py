@@ -75,6 +75,20 @@ BRAKE_EVENT_TOLERANCE = 0.3
 BRAKE_REQUIRED_DROP = 45.0
 BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
 
+# Section breakdowns for sectional charts
+# Key = "FROM-TO", Value = list of stations for section boundaries
+SECTION_BREAKDOWN = {
+    "JL-CSMT": ["JL", "MMR", "IGP", "KSRA", "KYN", "CSMT"],
+    "MMR-CSMT": ["MMR", "IGP", "KSRA", "KYN", "CSMT"],
+    "IGP-CSMT": ["IGP", "KSRA", "KYN", "CSMT"],
+    "PUNE-CSMT": ["PUNE", "LNL", "KJT", "KYN", "CSMT"],       # Via Kalyan
+    "PUNE-CSMT-PNVL": ["PUNE", "LNL", "KJT", "PNVL", "CSMT"], # Via PNVL
+    "RN-CSMT": ["RN", "CHI", "ROHA", "PNVL", "CSMT"],
+    "ROHA-CSMT": ["ROHA", "PNVL", "CSMT"],
+    "RN-BSR": ["RN", "ROHA", "PNVL", "BSR"],
+    "ROHA-BSR": ["ROHA", "PNVL", "BSR"],
+}
+
 MAIL_STAFF: list[dict[str, Any]] = []
 CLI_STAFF: list[dict[str, Any]] = []
 
@@ -124,10 +138,10 @@ MPS_CONFIG: dict[str, float] = {
     # DN (LTT → PUNE)
     "LTT-KYN": 105.0,
     "LTT-DIVA": 105.0,
-    "PNVL-KJT": 105.0,
+    "PNVL-KJT": 110.0,
     # UP (PUNE → LTT)
     "KYN-LTT": 105.0,
-    "KJT-PNVL": 105.0,
+    "KJT-PNVL": 110.0,
     "DIVA-LTT": 105.0,
     # DN (PNVL → JL)
     "PNVL-DTVL": 110.0,
@@ -301,8 +315,15 @@ def load_cli_staff():
         CLI_STAFF = []
 
 
+# def load_main_stations():
+#     """Load main_stations.csv for route-based sectional charts."""
+#     # NOT USED - Using SECTION_BREAKDOWN config instead
+#     pass
+
+
 load_mail_staff()
 load_cli_staff()
+# load_main_stations()  # Not needed - using SECTION_BREAKDOWN instead
 
 
 def load_geofences():
@@ -1303,6 +1324,20 @@ def _detect_halt_markers_from_enriched(enriched_df: pl.DataFrame, original_colum
     halts_before_filter: list[dict[str, Any]] = []
     last_halt_distance: float | None = None
 
+    # Add starting station (before first movement) if it has a station code
+    if first_move_idx > 0:
+        start_idx = 0
+        start_station = stations[start_idx]
+        display_start = str(start_station).strip() if start_station and start_station != "None" else None
+
+        if display_start:
+            halts.append({
+                "timestamp": timestamps[start_idx],
+                "station": display_start,
+            })
+            last_halt_distance = cumulative[start_idx]
+            print(f"[DEBUG HALT] Added starting station: {display_start} at row {start_idx}")
+
     for idx in range(first_move_idx + 1, len(speeds)):
         prev_speed = speeds[idx - 1]
         current_speed = speeds[idx]
@@ -1406,8 +1441,9 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
         .with_columns(pl.col("_TS").dt.truncate("1m").alias("_MIN"))
     )
 
-    restriction_limits = _restriction_limits_for_rows(enriched, relevant_restrictions)
-    mps_limits = _section_limits_for_rows(enriched, route_key, direction)
+    coach_type = criteria.get("coach_type")
+    restriction_limits = _restriction_limits_for_rows(enriched, relevant_restrictions, coach_type)
+    mps_limits = _section_limits_for_rows(enriched, route_key, direction, coach_type)
     enriched = enriched.with_columns([
         pl.Series("_LIMIT", restriction_limits),
         pl.Series("_MPS_LIMIT", mps_limits),
@@ -1506,6 +1542,170 @@ def _last_datetime(dataset: pl.DataFrame) -> datetime | None:
     return series[-1] if len(series) else None
 
 
+# OLD FUNCTIONS - Not used anymore, replaced by SECTION_BREAKDOWN approach
+# def _get_journey_sections(...): pass
+# def _find_section_boundary(...): pass
+
+
+def _get_section_breakdown(from_station: str, to_station: str) -> list[str] | None:
+    """
+    Get section breakdown for a route, handling LTT/DR replacement and auto-reverse.
+    Returns list of station codes for section boundaries, or None if not found.
+    """
+    from_norm = _norm_literal(from_station)
+    to_norm = _norm_literal(to_station)
+
+    # Try exact match first
+    route_key = f"{from_norm}-{to_norm}"
+    breakdown = SECTION_BREAKDOWN.get(route_key)
+
+    if breakdown:
+        # Replace CSMT with LTT/DR if actual end station is LTT/DR
+        if to_norm in ["LTT", "DR"] and "CSMT" in breakdown:
+            breakdown = [to_norm if s == "CSMT" else s for s in breakdown]
+        return breakdown
+
+    # Try reverse route
+    reverse_key = f"{to_norm}-{from_norm}"
+    reverse_breakdown = SECTION_BREAKDOWN.get(reverse_key)
+
+    if reverse_breakdown:
+        # Reverse the breakdown and replace CSMT with LTT/DR if needed
+        breakdown = list(reversed(reverse_breakdown))
+        if from_norm in ["LTT", "DR"] and "CSMT" in breakdown:
+            breakdown = [from_norm if s == "CSMT" else s for s in breakdown]
+        return breakdown
+
+    return None
+
+
+def _generate_sectional_charts(dataset: pl.DataFrame, criteria: dict) -> list[io.BytesIO]:
+    """
+    Generate sectional speed profile charts for the journey.
+    Uses actual halt stations detected in the data, filtered to configured breakdown.
+    Returns list of chart image buffers (2 charts per page).
+    """
+    from_station = criteria.get("from_station_equals")
+    to_station = criteria.get("to_station_equals")
+
+    if not from_station or not to_station:
+        print("[SECTION] Missing from/to station in criteria")
+        return []
+
+    # Get section breakdown for this route
+    breakdown = _get_section_breakdown(from_station, to_station)
+
+    if not breakdown:
+        print(f"[SECTION] No section breakdown configured for {from_station} → {to_station}")
+        return []
+
+    print(f"[SECTION] Using breakdown: {' → '.join(breakdown)}")
+
+    # Find station column and prepare data
+    ts_col = _find_time_column(dataset.columns)
+    sp_col = _find_speed_column(dataset.columns)
+    station_col = _first_matching_column(dataset.columns, "station", "code") or \
+                  _first_matching_column(dataset.columns, "station") or \
+                  _first_matching_column(dataset.columns, "LOCATION", "CODE")
+
+    if not ts_col or not sp_col or not station_col:
+        print(f"[SECTION] Required columns not found (ts={ts_col}, sp={sp_col}, station={station_col})")
+        return []
+
+    # Create enriched dataset with parsed timestamps
+    enriched = dataset.with_columns([
+        _parse_datetime_expr(ts_col).alias("_TS"),
+        pl.col(sp_col).cast(pl.Float64, strict=False).alias("_SPD"),
+        pl.col(station_col).cast(pl.Utf8).alias("_STATION"),
+    ])
+
+    # Build sections directly from breakdown configuration
+    # For each pair (breakdown[i] → breakdown[i+1]), find timestamps in the data
+    sections = []
+
+    for i in range(len(breakdown) - 1):
+        from_station = breakdown[i]
+        to_station = breakdown[i + 1]
+
+        # Find first occurrence of from_station in the data
+        from_rows = enriched.filter(pl.col("_STATION") == from_station)
+        if from_rows.height == 0:
+            print(f"[SECTION] Station {from_station} not found in data, skipping section {from_station} → {to_station}")
+            continue
+
+        # For starting station (i=0), use first occurrence
+        # For others, use last occurrence (in case of multiple halts)
+        if i == 0:
+            from_ts = from_rows["_TS"][0]
+        else:
+            from_ts = from_rows["_TS"][-1]
+
+        # Find last occurrence of to_station
+        to_rows = enriched.filter(pl.col("_STATION") == to_station)
+        if to_rows.height == 0:
+            print(f"[SECTION] Station {to_station} not found in data, skipping section {from_station} → {to_station}")
+            continue
+
+        to_ts = to_rows["_TS"][-1]
+
+        # Validate timestamp range
+        if from_ts is None or to_ts is None:
+            print(f"[SECTION] Null timestamps for {from_station} → {to_station}, skipping")
+            continue
+
+        if from_ts >= to_ts:
+            print(f"[SECTION] Invalid timestamp range for {from_station} → {to_station} ({from_ts} >= {to_ts}), skipping")
+            continue
+
+        sections.append({
+            'from_station': from_station,
+            'to_station': to_station,
+            'from_timestamp': from_ts,
+            'to_timestamp': to_ts,
+        })
+        print(f"[SECTION] Added section {from_station} → {to_station} ({from_ts} to {to_ts})")
+
+    if not sections:
+        print("[SECTION] No valid sections found")
+        return []
+
+    print(f"[SECTION] Generated {len(sections)} sections")
+
+    chart_images = []
+
+    for section in sections:
+        section_from = section['from_station']
+        section_to = section['to_station']
+        from_ts = section['from_timestamp']
+        to_ts = section['to_timestamp']
+
+        # Filter data by timestamp range (more reliable than row indices)
+        section_data = enriched.filter(
+            (pl.col("_TS") >= from_ts) & (pl.col("_TS") <= to_ts)
+        )
+
+        if section_data.height == 0:
+            print(f"[SECTION] No data for {section_from} → {section_to}, skipping")
+            continue
+
+        # Build chart payload for this section
+        try:
+            payload = _build_chart_payload(section_data, criteria)
+            payload["section_title"] = f"{section_from} → {section_to}"
+
+            # Render chart
+            chart_img = _render_speed_chart_image(payload)
+            if chart_img:
+                chart_images.append(chart_img)
+                print(f"[SECTION] ✓ Generated chart for {section_from} → {section_to}")
+        except Exception as e:
+            print(f"[SECTION] Error generating chart for {section_from} → {section_to}: {e}")
+            continue
+
+    print(f"[SECTION] Generated {len(chart_images)} sectional charts")
+    return chart_images
+
+
 def _build_summary_details(dataset: pl.DataFrame, criteria: dict) -> dict[str, Any]:
     first_dt = _first_datetime(dataset)
     last_dt = _last_datetime(dataset)
@@ -1539,7 +1739,14 @@ def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
     if not labels or not values:
         return None
     x = list(range(len(labels)))
-    fig, ax = plt.subplots(figsize=(8, 3))
+
+    # Add section title if present
+    section_title = payload.get("section_title")
+    if section_title:
+        fig, ax = plt.subplots(figsize=(8, 2.8))
+        fig.suptitle(section_title, fontsize=10, fontweight='bold', y=0.98)
+    else:
+        fig, ax = plt.subplots(figsize=(8, 3))
     ax.plot(x, values, color="#0c6cf2", linewidth=1.6)
     limit_vals = payload.get("limit_values") or []
     if len(limit_vals) == len(x) and any(v is not None for v in limit_vals):
@@ -1648,6 +1855,7 @@ def _render_pdf_report(
     brake_charts: list[io.BytesIO],
     halts: list[dict[str, Any]],
     brake_tests: dict[str, Any],
+    sectional_charts: list[io.BytesIO] | None = None,
 ) -> io.BytesIO:
     if SimpleDocTemplate is None:
         raise RuntimeError("reportlab is required for PDF export. Please install it.")
@@ -1683,9 +1891,26 @@ def _render_pdf_report(
     story.append(Spacer(1, 16))
 
     if speed_chart:
-        story.append(Paragraph("Speed Profile", styles["Heading2"]))
+        story.append(Paragraph("Speed Profile (Full Journey)", styles["Heading2"]))
         speed_chart.seek(0)
         story.append(RLImage(speed_chart, width=doc.width, height=200))
+        story.append(Spacer(1, 16))
+
+    # Add sectional speed profile charts (2 per page)
+    if sectional_charts:
+        story.append(Paragraph("Sectional Speed Profiles", styles["Heading2"]))
+        story.append(Spacer(1, 8))
+
+        for idx, chart_img in enumerate(sectional_charts):
+            # Add page break after every 2 charts (but not before first chart)
+            if idx > 0 and idx % 2 == 0:
+                story.append(PageBreak())
+            elif idx > 0:
+                story.append(Spacer(1, 12))  # Small space between charts on same page
+
+            chart_img.seek(0)
+            story.append(RLImage(chart_img, width=doc.width, height=185))
+
         story.append(Spacer(1, 16))
 
     # Add braking curve charts (2 per page)
@@ -1781,7 +2006,8 @@ def export_pdf(criteria: dict = Body(...)):
     try:
         speed_chart = _render_speed_chart_image(chart_payload)
         brake_charts = _render_brake_curve_images(unified_data)  # Returns list of images
-        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests)
+        sectional_charts = _generate_sectional_charts(filtered, criteria)  # Generate sectional speed profiles
+        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests, sectional_charts)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
     filename = f"rtis_report_{int(time.time())}.pdf"
@@ -1981,7 +2207,11 @@ def _find_station_point_index(lat_vals: list[float | None], lon_vals: list[float
     return best_idx
 
 
-def _restriction_limits_for_rows(rows: pl.DataFrame, restrictions: list[dict[str, Any]]) -> list[float | None]:
+def _restriction_limits_for_rows(rows: pl.DataFrame, restrictions: list[dict[str, Any]], coach_type: str | None = None) -> list[float | None]:
+    """
+    Apply permanent speed restrictions (PSR) from all_section_psr.csv.
+    Coach type adjustments are handled in MPS, not here.
+    """
     if not restrictions or "_LAT_FLOAT" not in rows.columns or "_LON_FLOAT" not in rows.columns:
         return [None] * rows.height
     lat_vals = rows["_LAT_FLOAT"].to_list()
@@ -1991,6 +2221,7 @@ def _restriction_limits_for_rows(rows: pl.DataFrame, restrictions: list[dict[str
         limit = float(r.get("speed_limit") or 0.0)
         if limit <= 0:
             continue
+
         start_idx = _find_point_index(lat_vals, lon_vals, r["from_lat"], r["from_lon"], 0)
         if start_idx is None:
             continue
@@ -2129,7 +2360,7 @@ def _sections_for_route(route_key: str | None, direction: str | None, rows: pl.D
     return sequences
 
 
-def _apply_section_sequence(lat_vals: list[float | None], lon_vals: list[float | None], sections: list[str], direction: str | None) -> list[float | None]:
+def _apply_section_sequence(lat_vals: list[float | None], lon_vals: list[float | None], sections: list[str], direction: str | None, coach_type: str | None = None) -> list[float | None]:
     result: list[float | None] = [None] * len(lat_vals)
     cursor = 0
     for section in sections:
@@ -2151,12 +2382,24 @@ def _apply_section_sequence(lat_vals: list[float | None], lon_vals: list[float |
             start_idx, end_idx = end_idx, start_idx
         cursor = end_idx
         limit = MPS_CONFIG[section]
+
+        # Adjust MPS based on coach type for specific sections
+        # IGP-MMR, MMR-IGP, IGP-JL, JL-IGP: 130 km/h (LHB) → 110 km/h (ICF)
+        if coach_type == "ICF" and limit == 130.0:
+            if section in ["IGP-MMR", "MMR-IGP", "IGP-JL", "JL-IGP"]:
+                limit = 110.0
+
+        # CHI-RN, RN-CHI, ROHA-CHI, CHI-ROHA: 120 km/h (LHB) → 110 km/h (ICF)
+        if coach_type == "ICF" and limit == 120.0:
+            if section in ["CHI-RN", "RN-CHI", "ROHA-CHI", "CHI-ROHA"]:
+                limit = 110.0
+
         for idx in range(start_idx, end_idx + 1):
             result[idx] = limit
     return result
 
 
-def _section_limits_for_rows(rows: pl.DataFrame, route_key: str | None, direction: str | None) -> list[float | None]:
+def _section_limits_for_rows(rows: pl.DataFrame, route_key: str | None, direction: str | None, coach_type: str | None = None) -> list[float | None]:
     sequences = _sections_for_route(route_key, direction, rows)
     if not sequences or "_LAT_FLOAT" not in rows.columns or "_LON_FLOAT" not in rows.columns:
         return [None] * rows.height
@@ -2165,7 +2408,7 @@ def _section_limits_for_rows(rows: pl.DataFrame, route_key: str | None, directio
     best: list[float | None] = [None] * len(lat_vals)
     best_length = -1
     for seq in sequences:
-        seq_limits = _apply_section_sequence(lat_vals, lon_vals, seq, direction)
+        seq_limits = _apply_section_sequence(lat_vals, lon_vals, seq, direction, coach_type)
         length = sum(1 for v in seq_limits if v is not None)
         if length > best_length:
             best_length = length
