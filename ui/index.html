@@ -267,13 +267,14 @@
   <section class="card">
     <h3>Data File</h3>
     <div class="row">
-      <label>Upload CSV
-        <input type="file" id="csv" accept=".csv" />
+      <label>Upload CSV (select multiple files for overnight journeys)
+        <input type="file" id="csv" accept=".csv" multiple />
       </label>
       <div style="display:flex;align-items:flex-end;">
         <button id="btnUpload" class="secondary">Load CSV</button>
       </div>
     </div>
+    <div id="selectedFiles" style="font-size:0.85rem;margin-top:8px;color:#666;"></div>
   </section>
 
   <section class="card">
@@ -854,14 +855,37 @@ renderBrakingTable([]);
 renderBrakingChart([]);
 renderBrakeTests(null);
 
+// Show selected files
+document.getElementById("csv").addEventListener("change", (e) => {
+  const files = e.target.files;
+  const display = document.getElementById("selectedFiles");
+  if (files.length === 0) {
+    display.textContent = "";
+  } else if (files.length === 1) {
+    display.textContent = `Selected: ${files[0].name}`;
+  } else {
+    const fileNames = Array.from(files).map(f => f.name).join(", ");
+    display.textContent = `Selected ${files.length} files: ${fileNames}`;
+  }
+});
+
 document.getElementById("btnUpload").onclick = async () => {
-  const f = document.getElementById("csv").files[0];
-  if(!f){ alert("Choose a CSV first"); return; }
-  const fd = new FormData(); fd.append("file", f);
+  const files = document.getElementById("csv").files;
+  if(files.length === 0){ alert("Choose at least one CSV file"); return; }
+
+  const fd = new FormData();
+  for (let i = 0; i < files.length; i++) {
+    fd.append("files", files[i]);
+  }
+
   const r = await fetch(`${API}/load_csv`, { method:"POST", body: fd });
   const j = await r.json();
   if (r.ok) {
-    alert(`CSV loaded (${j.rows} rows, ${j.cols} cols)`);
+    if (files.length > 1) {
+      alert(`${files.length} CSV files merged and loaded (${j.rows} total rows, ${j.cols} cols)`);
+    } else {
+      alert(`CSV loaded (${j.rows} rows, ${j.cols} cols)`);
+    }
   } else {
     alert(j.error || "Upload failed");
   }
@@ -985,10 +1009,21 @@ document.getElementById("btnExport").onclick = async () => {
       body: JSON.stringify(getCriteria())
     });
     if(!r.ok){ const t = await r.text(); alert("Export failed:\n" + t); return; }
+
+    // Extract filename from Content-Disposition header
+    let filename = "rtis_report.pdf";
+    const contentDisposition = r.headers.get("Content-Disposition");
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1];
+      }
+    }
+
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "rtis_report.pdf";
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
   } catch (err) {

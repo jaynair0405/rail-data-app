@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import polars as pl
 import pandas as pd
 import io, time, re, math, sys
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -178,6 +178,7 @@ ROUTE_SECTION_MAP: dict[tuple[str, str], list[list[str]]] = {
     ("PNVL-JL", "DN"): [["PNVL-DTVL", "DTVL-KYN", "KYN-KSRA", "KSRA-IGP", "IGP-JL"]],
     ("JL-PNVL", "UP"): [["JL-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-DTVL", "DTVL-PNVL"]],
     ("LTT-JL", "DN"): [["LTT-KYN", "KYN-KSRA", "KSRA-IGP", "IGP-JL"]],
+    ("LTT-IGP", "DN"): [["LTT-KYN", "KYN-KSRA", "KSRA-IGP"]],
     ("JL-LTT", "UP"): [["JL-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-LTT"]],
     ("LTT-RN", "DN"): [["LTT-DIVA", "DIVA-PNVL", "PNVL-ROHA", "ROHA-CHI", "CHI-RN"]],
     ("RN-LTT", "UP"): [["RN-CHI", "CHI-ROHA", "ROHA-PNVL", "PNVL-DIVA", "DIVA-LTT"]],
@@ -512,28 +513,89 @@ def health():
 # Upload & Preview
 # ------------------------------
 @app.post("/load_csv")
-async def load_csv(file: UploadFile):
-    """Upload and load analysis CSV (large run file)."""
+async def load_csv(files: List[UploadFile]):
+    """Upload and load analysis CSV (large run file). Supports multiple files for overnight journeys."""
     global DF
-    data = await file.read()
-    if not data:
+
+    if not files or len(files) == 0:
         DF = None
-        return JSONResponse({"error": "empty file"}, status_code=400)
-    buf = io.BytesIO(data)
-    DF = pl.read_csv(
-        buf,
-        infer_schema_length=2000,
-        null_values=["NULL", "Null", "null"],
-        dtypes={
-            "distFromSpeed": pl.Utf8,
-            "distFromPrevLatLng": pl.Utf8,
-            "BE Version": pl.Utf8,
-            "GUI Version": pl.Utf8,
-            "ODU Version": pl.Utf8,
-            "DB Circle Count": pl.Utf8,
-            "DB Polygon Count": pl.Utf8,
-        },
-    )
+        return JSONResponse({"error": "no files uploaded"}, status_code=400)
+
+    dataframes = []
+    file_info = []
+
+    # Read each file and extract first timestamp for sorting
+    for file in files:
+        data = await file.read()
+        if not data:
+            continue
+
+        buf = io.BytesIO(data)
+        df = pl.read_csv(
+            buf,
+            infer_schema_length=2000,
+            null_values=["NULL", "Null", "null"],
+            dtypes={
+                "distFromSpeed": pl.Utf8,
+                "distFromPrevLatLng": pl.Utf8,
+                "BE Version": pl.Utf8,
+                "GUI Version": pl.Utf8,
+                "ODU Version": pl.Utf8,
+                "DB Circle Count": pl.Utf8,
+                "DB Polygon Count": pl.Utf8,
+            },
+        )
+
+        # Extract first timestamp for sorting
+        time_col = None
+        for col in df.columns:
+            col_lower = col.lower()
+            if "time" in col_lower and ("gps" in col_lower or "logging" in col_lower or col_lower == "time"):
+                time_col = col
+                break
+
+        first_timestamp = None
+        if time_col and df.height > 0:
+            first_row = df[time_col][0]
+            if first_row:
+                first_timestamp = str(first_row)
+
+        file_info.append({
+            "filename": file.filename,
+            "df": df,
+            "first_timestamp": first_timestamp,
+            "rows": df.height
+        })
+
+    if not file_info:
+        DF = None
+        return JSONResponse({"error": "no valid data in uploaded files"}, status_code=400)
+
+    # Sort files by timestamp (earliest first)
+    file_info.sort(key=lambda x: x["first_timestamp"] if x["first_timestamp"] else "")
+
+    # Check column compatibility if multiple files
+    if len(file_info) > 1:
+        first_cols = set(file_info[0]["df"].columns)
+        for i, info in enumerate(file_info[1:], 1):
+            current_cols = set(info["df"].columns)
+            if first_cols != current_cols:
+                missing = first_cols - current_cols
+                extra = current_cols - first_cols
+                error_msg = f"Column mismatch between files. "
+                if missing:
+                    error_msg += f"File '{info['filename']}' missing columns: {', '.join(missing)}. "
+                if extra:
+                    error_msg += f"File '{info['filename']}' has extra columns: {', '.join(extra)}."
+                return JSONResponse({"error": error_msg}, status_code=400)
+
+    # Concatenate DataFrames
+    if len(file_info) == 1:
+        DF = file_info[0]["df"]
+    else:
+        DF = pl.concat([info["df"] for info in file_info], how="vertical")
+
+    # Apply standard processing
     DF = _repair_shifted_rows(DF)
     drop_cols = [
         "BE Version",
@@ -544,7 +606,14 @@ async def load_csv(file: UploadFile):
     ]
     keep = [c for c in DF.columns if c not in drop_cols]
     DF = DF.select(keep)
-    return {"rows": DF.height, "cols": DF.width, "columns": DF.columns}
+
+    return {
+        "rows": DF.height,
+        "cols": DF.width,
+        "columns": DF.columns,
+        "files_merged": len(file_info),
+        "file_details": [{"filename": info["filename"], "rows": info["rows"]} for info in file_info]
+    }
 
 
 @app.get("/preview")
@@ -1986,6 +2055,63 @@ def _render_pdf_report(
     return buffer
 
 
+def _generate_pdf_filename(filtered_df: pl.DataFrame, criteria: dict) -> str:
+    """
+    Generate PDF filename in format: DDMMYY-TRAINNUMBER-LPNAME.pdf
+    Example: 151125-12319-surendra.pdf
+    """
+    # Extract date of working from first row
+    date_str = ""
+    if filtered_df.height > 0:
+        # Find time column
+        time_col = None
+        for col in filtered_df.columns:
+            col_lower = col.lower()
+            if "time" in col_lower and ("gps" in col_lower or "logging" in col_lower or col_lower == "time"):
+                time_col = col
+                break
+
+        if time_col:
+            first_timestamp = filtered_df[time_col][0]
+            if first_timestamp:
+                # Parse timestamp and format as DDMMYY
+                timestamp_str = str(first_timestamp)
+                # Handle formats like "2025-11-15 22:30:00" or "15/11/2025 22:30:00"
+                try:
+                    # Try parsing common formats
+                    from datetime import datetime
+                    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%d-%m-%Y %H:%M:%S", "%d-%m-%Y"]:
+                        try:
+                            dt = datetime.strptime(timestamp_str.split('.')[0].strip(), fmt)
+                            date_str = dt.strftime("%d%m%y")
+                            break
+                        except ValueError:
+                            continue
+                except Exception:
+                    pass
+
+    # Get train number (sanitize)
+    train_num = str(criteria.get("train_number", "")).strip()
+    if not train_num:
+        train_num = "unknown"
+
+    # Get LP name (sanitize: lowercase, remove spaces/special chars)
+    lp_name = str(criteria.get("lp_name", "")).strip().lower()
+    if not lp_name:
+        lp_name = "unknown"
+    else:
+        # Remove special characters, keep only alphanumeric
+        lp_name = re.sub(r'[^a-z0-9]', '', lp_name)
+
+    # Fallback to timestamp if date extraction failed
+    if not date_str:
+        date_str = datetime.now().strftime("%d%m%y")
+
+    # Build filename
+    filename = f"{date_str}-{train_num}-{lp_name}.pdf"
+    return filename
+
+
 @app.post("/export_pdf")
 def export_pdf(criteria: dict = Body(...)):
     if DF is None:
@@ -2010,7 +2136,10 @@ def export_pdf(criteria: dict = Body(...)):
         pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests, sectional_charts)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
-    filename = f"rtis_report_{int(time.time())}.pdf"
+
+    # Generate dynamic filename: DDMMYY-TRAINNUMBER-LPNAME.pdf
+    filename = _generate_pdf_filename(filtered, criteria)
+
     return StreamingResponse(
         pdf_buffer,
         media_type="application/pdf",
