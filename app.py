@@ -99,8 +99,8 @@ MPS_CONFIG: dict[str, float] = {
     "JL-IGP": 130.0,
     "IGP-KSRA": 60.0,
     "KSRA-KYN": 105.0,
-    "IGP-MMR": 120.0,
-    "MMR-IGP": 120.0,
+    "IGP-MMR": 130.0,
+    "MMR-IGP": 130.0,
     # DN (CSMT → RN)
     "CSMT-DR": 105.0,
     "DR-TNA": 105.0,
@@ -1248,6 +1248,136 @@ def export(criteria: dict = Body(...)):
 # ------------------------------
 # Chart Data
 # ------------------------------
+def _detect_halt_markers_from_enriched(enriched_df: pl.DataFrame, original_columns: list[str]) -> list[dict[str, Any]]:
+    """
+    Detect halts with 500m spacing for station labels on speed profile chart.
+    Works with enriched DataFrame that has _TS, _SPD columns.
+    Returns list of {timestamp, station} for each halt.
+    """
+    # Get station column from original columns
+    station_col = _first_matching_column(original_columns, "STATION", "CODE") or _first_matching_column(original_columns, "STATION")
+    # Look for distance column - matches distFromPrevLatLng, distFromSpeed, or DISTANCE
+    dist_col = _first_matching_column(original_columns, "DISTANCE") or \
+               _first_matching_column(original_columns, "dist", "From") or \
+               _first_matching_column(original_columns, "dist")
+
+    print(f"[DEBUG HALT] Station column: {station_col}, Distance column: {dist_col}")
+    print(f"[DEBUG HALT] Enriched DF columns: {enriched_df.columns}")
+
+    if not dist_col:
+        print("[DEBUG HALT] No distance column found, returning empty")
+        return []
+
+    # Extract data from enriched DataFrame
+    speeds = enriched_df["_SPD"].to_list()
+    timestamps = enriched_df["_TS"].to_list()
+
+    # Get stations if column exists
+    if station_col and station_col in enriched_df.columns:
+        stations = enriched_df[station_col].cast(pl.Utf8).to_list()
+    else:
+        stations = [None] * len(speeds)
+
+    # Get distance steps from original column
+    if dist_col in enriched_df.columns:
+        dist_steps = enriched_df[dist_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+    else:
+        return []
+
+    # Calculate cumulative distance
+    cumulative: list[float] = []
+    running = 0.0
+    for step in dist_steps:
+        running += max(0.0, step or 0.0)
+        cumulative.append(running)
+
+    # Find first movement
+    first_move_idx = next((i for i, sp in enumerate(speeds) if sp and sp > 0.5), None)
+    print(f"[DEBUG HALT] First movement index: {first_move_idx}, Total rows: {len(speeds)}")
+    if first_move_idx is None:
+        print("[DEBUG HALT] No movement detected, returning empty")
+        return []
+
+    # Detect halts with 500m spacing
+    halts: list[dict[str, Any]] = []
+    halts_before_filter: list[dict[str, Any]] = []
+    last_halt_distance: float | None = None
+
+    for idx in range(first_move_idx + 1, len(speeds)):
+        prev_speed = speeds[idx - 1]
+        current_speed = speeds[idx]
+
+        # Halt detected (speed drops to <=0.5)
+        if current_speed <= 0.5 and prev_speed > 0.5:
+            halt_distance = cumulative[idx]
+            halt_station = stations[idx]
+            display_station = str(halt_station).strip() if halt_station and halt_station != "None" else None
+
+            halts_before_filter.append({
+                "distance": halt_distance,
+                "station": display_station,
+            })
+
+            # Apply 500m spacing rule
+            if last_halt_distance is not None and (halt_distance - last_halt_distance) < 500.0:
+                continue
+
+            if display_station:
+                halts.append({
+                    "timestamp": timestamps[idx],
+                    "station": display_station,
+                })
+                last_halt_distance = halt_distance
+
+    print(f"[DEBUG HALT] Found {len(halts_before_filter)} raw halts: {[(h['distance'], h['station']) for h in halts_before_filter[:10]]}")
+    print(f"[DEBUG HALT] After 500m filter + station check: {len(halts)} halts")
+
+    return halts
+
+
+def _map_halts_to_chart(halt_markers: list[dict[str, Any]], chart_timestamps: list[Any]) -> list[str | None]:
+    """
+    Map halt station names to chart x-axis labels.
+    Returns list parallel to chart_timestamps with station names or None.
+    """
+    result: list[str | None] = [None] * len(chart_timestamps)
+
+    if not halt_markers:
+        return result
+
+    for halt in halt_markers:
+        halt_ts = halt["timestamp"]
+        station = halt["station"]
+
+        if halt_ts is None:
+            continue
+
+        # Find closest chart timestamp
+        best_idx = None
+        min_diff_seconds = None
+
+        for idx, chart_ts in enumerate(chart_timestamps):
+            if chart_ts is None:
+                continue
+
+            try:
+                # Both should be datetime objects from Polars
+                diff_seconds = abs((halt_ts - chart_ts).total_seconds())
+
+                if min_diff_seconds is None or diff_seconds < min_diff_seconds:
+                    min_diff_seconds = diff_seconds
+                    best_idx = idx
+            except (AttributeError, TypeError):
+                # Skip if timestamp comparison fails
+                continue
+
+        # Assign station to closest chart point (within 2 minutes tolerance)
+        if best_idx is not None and min_diff_seconds is not None and min_diff_seconds < 120:
+            result[best_idx] = station
+
+    return result
+
+
 def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any]:
     if dataset.height == 0:
         return {"labels": [], "values": [], "yLabel": "Speed (km/h)", "restrictions": [], "mps": []}
@@ -1283,6 +1413,10 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
         pl.Series("_MPS_LIMIT", mps_limits),
     ])
 
+    # Detect halts with 500m spacing for station labels on chart (before aggregation)
+    halt_markers = _detect_halt_markers_from_enriched(enriched, dataset.columns)
+    print(f"[DEBUG] Detected {len(halt_markers)} halt markers with stations: {[h['station'] for h in halt_markers]}")
+
     df2 = (
         enriched.group_by("_MIN")
         .agg([
@@ -1290,6 +1424,7 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
             pl.col("_SPD").last().alias("_LAST"),
             pl.col("_LIMIT").min().alias("_LIMIT_MIN"),
             pl.col("_MPS_LIMIT").min().alias("_MPS"),
+            pl.col("_TS").first().alias("_FIRST_TS"),
         ])
         .sort("_MIN")
     )
@@ -1299,6 +1434,12 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
     mps_values_raw = [float(x) if x is not None else None for x in df2["_MPS"].to_list()]
     mps_values = _forward_fill(mps_values_raw)
     segments = _build_restriction_segments(labels, limit_values)
+
+    # Map halts to chart labels (minute-aggregated)
+    chart_timestamps = df2["_FIRST_TS"].to_list()
+    station_labels = _map_halts_to_chart(halt_markers, chart_timestamps)
+    print(f"[DEBUG] Mapped {sum(1 for s in station_labels if s)} stations to {len(station_labels)} chart points")
+
     return {
         "labels": labels,
         "values": values,
@@ -1306,6 +1447,7 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
         "restrictions": segments,
         "mps": mps_values,
         "limit_values": limit_values,
+        "station_labels": station_labels,
     }
 
 
@@ -1409,16 +1551,28 @@ def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
         ax.plot(x, [v if v is not None else float("nan") for v in mps], label="MPS", color="#ffa500", linewidth=1.2)
     ax.set_ylabel("Speed (km/h)")
     ax.set_xlabel("Time")
+
+    # Get station labels if available and add vertical markers
+    station_labels = payload.get("station_labels") or []
+    for i, station in enumerate(station_labels):
+        if station:
+            # Draw vertical dashed line at halt
+            ax.axvline(x=i, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
+            # Add station label at top of chart
+            y_max = max(values) if values else 100
+            ax.text(i, y_max * 0.95, station, rotation=90, va='top', ha='right',
+                   fontsize=7, color='#333', bbox=dict(boxstyle='round,pad=0.3',
+                   facecolor='white', edgecolor='none', alpha=0.7))
+
+    # Create x-axis labels (time only)
     tick_count = min(6, len(labels))
     if tick_count > 0:
         step = max(1, len(labels) // tick_count)
-        ax.set_xticks(x[::step])
-        ax.set_xticklabels(
-            [labels[i].split(" ")[-1] for i in range(0, len(labels), step)],
-            rotation=45,
-            ha="right",
-            fontsize=7,
-        )
+        tick_positions = x[::step]
+        tick_labels = [labels[i].split(" ")[-1] for i in range(0, len(labels), step)]
+
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
     ax.grid(True, linestyle="--", alpha=0.3)
     fig.tight_layout()
     buf = io.BytesIO()
@@ -2370,7 +2524,14 @@ def _brake_tests(df: pl.DataFrame, start_station: str | None, direction: str | N
 
     start_norm = _norm_literal(start_station)
     feel_min, feel_max = (7.0, 16.0) if start_norm == "PUNE" else (10.0, 16.0)
-    power_min, power_max = (45.0, 100.0) if start_norm == "MMR" else (45.0, 70.0)
+
+    # Brake Power Test criteria based on start station
+    if start_norm == "MMR":
+        power_min, power_max = 45.0, 100.0
+    elif start_norm == "IGP":
+        power_min, power_max = 35.0, 60.0
+    else:
+        power_min, power_max = 45.0, 70.0
 
     feel_raw = _detect_brake_event(speeds, mask, feel_min, feel_max, BRAKE_REQUIRED_DROP)
     power_raw = _detect_brake_event(speeds, mask, power_min, power_max, BRAKE_REQUIRED_DROP)

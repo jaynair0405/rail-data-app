@@ -693,10 +693,48 @@ async function drawChart(criteria){
     { xAxis: seg.start, yAxis: 0 },
     { xAxis: seg.end || seg.start, yAxis: seg.limit }
   ]);
+
+  // Prepare station halt markers
+  const stationLabels = j.station_labels || [];
+  const stationMarkLines = [];
+
+  stationLabels.forEach((station, index) => {
+    if (station) {
+      stationMarkLines.push({
+        xAxis: j.labels[index],
+        label: {
+          formatter: station,
+          position: 'insideEndTop',
+          fontSize: 9,
+          color: '#333',
+          backgroundColor: 'rgba(255, 255, 255, 0.8)',
+          padding: 2,
+          borderRadius: 2
+        },
+        lineStyle: {
+          color: '#888',
+          type: 'dashed',
+          width: 1
+        }
+      });
+    }
+  });
+
   chart.setOption({
     tooltip: { trigger: 'axis' },
     grid: { left: 40, right: 20, top: 30, bottom: 40 },
-    xAxis: { type: 'category', data: j.labels, name: 'Time' },
+    xAxis: {
+      type: 'category',
+      data: j.labels,
+      name: 'Time',
+      axisLabel: {
+        rotate: 45,
+        fontSize: 9,
+        formatter: function(value) {
+          return value.split(' ')[1] || value; // Show only HH:MM
+        }
+      }
+    },
     yAxis: { type: 'value', name: j.yLabel || 'Speed' },
     series: [
       {
@@ -707,6 +745,10 @@ async function drawChart(criteria){
         markArea: markAreas.length ? {
           itemStyle: { color: 'rgba(255, 99, 132, 0.25)' },
           data: markAreas
+        } : undefined,
+        markLine: stationMarkLines.length ? {
+          symbol: 'none',
+          data: stationMarkLines
         } : undefined
       },
       {
