@@ -16,7 +16,9 @@ try:  # Optional heavy deps for PDF export
     from reportlab.lib import colors  # type: ignore
     from reportlab.lib.pagesizes import A4  # type: ignore
     from reportlab.lib.styles import getSampleStyleSheet  # type: ignore
+    from reportlab.lib.units import inch  # type: ignore
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak  # type: ignore
+    from reportlab.graphics.shapes import Drawing, Line  # type: ignore
 except ImportError:
     plt = None  # type: ignore[assignment]
     SimpleDocTemplate = None  # type: ignore[assignment]
@@ -24,6 +26,8 @@ except ImportError:
     colors = None  # type: ignore[assignment]
     A4 = None  # type: ignore[assignment]
     getSampleStyleSheet = None  # type: ignore[assignment]
+    inch = None  # type: ignore[assignment]
+    Drawing = Line = None  # type: ignore[assignment]
 
 # ------------------------------
 # App & Static UI
@@ -2049,6 +2053,24 @@ def _render_pdf_report(
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
         story.append(tests_table)
+
+    # Add footer on last page
+    story.append(Spacer(1, 20))
+
+    # Horizontal line
+    line_drawing = Drawing(6*inch, 1)
+    line_drawing.add(Line(0, 0, 6*inch, 0, strokeColor=colors.grey, strokeWidth=0.5))
+    story.append(line_drawing)
+
+    story.append(Spacer(1, 6))
+
+    # Footer text in small font
+    footer_style = getSampleStyleSheet()["Normal"]
+    footer_style.fontSize = 8
+    footer_style.alignment = 1  # Center alignment
+    footer_style.textColor = colors.grey
+    footer_text = "Developed by Jayakumar M D MMan CSMT under the guidelines of Sr DEE TRSO Shri Hemant Jindal"
+    story.append(Paragraph(footer_text, footer_style))
 
     doc.build(story)
     buffer.seek(0)
