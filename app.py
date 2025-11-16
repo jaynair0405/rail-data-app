@@ -157,7 +157,7 @@ ROUTE_SECTION_MAP: dict[tuple[str, str], list[list[str]]] = {
         ["CSMT-DIVA", "DIVA-PNVL", "PNVL-KJT", "KJT-PDI", "PDI-LNL", "LNL-PUNE"],
         
     ],
-    ("CSMT-PUNE", "UP"): [
+    ("PUNE-CSMT", "UP"): [
         ["PUNE-LNL", "LNL-PDI", "PDI-KJT", "KJT-KYN", "KYN-CSMT"],
         ["PUNE-LNL", "LNL-PDI", "PDI-KJT", "KJT-PNVL", "PNVL-DIVA", "DIVA-CSMT"],
     ],
@@ -2044,6 +2044,192 @@ def train_info(train_number: str = Query(..., description="Train number as print
         "departure_time": row.get("departure_time"),
         "arrival_time": row.get("arrival_time"),
         "direction": row.get("direction"),
+    }
+
+
+@app.get("/stations")
+def get_all_stations():
+    """Get all stations from route graph for dropdown population."""
+    stations = set()
+
+    # From ROUTE_SEQUENCES
+    for route_id, station_list in ROUTE_SEQUENCES.items():
+        stations.update(station_list)
+
+    # From ROUTE_STATIONS
+    for route_id, station_set in ROUTE_STATIONS.items():
+        stations.update(station_set)
+
+    return {
+        "stations": sorted(list(stations))
+    }
+
+
+@app.post("/validate_route")
+def validate_route(criteria: Dict[str, Any] = Body(...)):
+    """
+    Validate route selection after geofence slicing.
+    Provides immediate feedback before analysis.
+    Does NOT validate entire CSV direction (preserves multi-direction CSV handling).
+    """
+    if DF is None:
+        return JSONResponse({"error": "no data loaded"}, status_code=400)
+
+    from_station = criteria.get("from_station_equals")
+    to_station = criteria.get("to_station_equals")
+    direction = criteria.get("direction_equals")
+
+    if not from_station or not to_station:
+        return JSONResponse({
+            "valid": False,
+            "errors": ["from_station and to_station are required"]
+        }, status_code=400)
+
+    # Apply geofence slicing (current smart logic - handles multi-direction CSVs)
+    try:
+        sliced = apply_criteria(DF, criteria)
+    except Exception as e:
+        return JSONResponse({
+            "valid": False,
+            "errors": [f"Error applying criteria: {str(e)}"]
+        }, status_code=400)
+
+    warnings = []
+    errors = []
+
+    # Check 1: Data exists after slicing?
+    if sliced.height == 0:
+        return JSONResponse({
+            "valid": False,
+            "errors": [
+                f"No data found for {from_station} → {to_station}.",
+                "The route may not exist in this CSV file.",
+                "Please verify the route selection or try Manual Route Override."
+            ],
+            "sliced_rows": 0,
+            "route_exists": False
+        }, status_code=200)
+
+    # Check 2: Route exists in ROUTE_SECTION_MAP?
+    route_key = _route_key(from_station, to_station)
+    route_exists = False
+    for dir_suffix in ["UP", "DN"]:
+        if (route_key, dir_suffix) in ROUTE_SECTION_MAP:
+            route_exists = True
+            break
+
+    if not route_exists:
+        warnings.append(
+            f"Route {route_key} not configured in system. "
+            f"MPS and PSR overlays will not be available. "
+            f"Raw speed data and braking analysis will still work."
+        )
+
+    # Check 3: Station sequence validation (optional)
+    route_sequences_key = f"{from_station}-{to_station}"
+    if route_sequences_key in ROUTE_SEQUENCES:
+        expected_seq = ROUTE_SEQUENCES[route_sequences_key]
+        station_col = _first_matching_column(sliced.columns, "STATION", "CODE") or \
+                      _first_matching_column(sliced.columns, "STATION")
+
+        if station_col and station_col in sliced.columns:
+            actual_stations = [
+                str(s).strip().upper()
+                for s in sliced[station_col].unique().to_list()
+                if s and str(s).strip() and str(s).strip().upper() != "NONE"
+            ]
+
+            # Calculate coverage
+            matched = sum(1 for s in actual_stations if s in expected_seq)
+            coverage = matched / len(expected_seq) if expected_seq else 0
+
+            if coverage < 0.3:
+                errors.append(
+                    f"Low station coverage ({coverage*100:.0f}%). "
+                    f"Data may not match the selected route."
+                )
+            elif coverage < 0.7:
+                warnings.append(
+                    f"Partial station coverage ({coverage*100:.0f}%). "
+                    f"This may be a partial journey or some stations are missing from data."
+                )
+
+    # Check 4: Direction reversal and destination check (critical)
+    station_col = _first_matching_column(sliced.columns, "STATION", "CODE") or \
+                  _first_matching_column(sliced.columns, "STATION")
+
+    if station_col and station_col in sliced.columns:
+        stations_list = sliced[station_col].to_list()
+
+        # Find first and last non-null stations
+        first_station = None
+        last_station = None
+        all_stations = set()
+
+        for s in stations_list:
+            if s and str(s).strip() and str(s).strip().upper() != "NONE":
+                station_upper = str(s).strip().upper()
+                all_stations.add(station_upper)
+                if first_station is None:
+                    first_station = station_upper
+                last_station = station_upper
+
+        if first_station and last_station:
+            expected_from = from_station.strip().upper()
+            expected_to = to_station.strip().upper()
+
+            # Check for complete reversal
+            if first_station == expected_to and last_station == expected_from:
+                return JSONResponse({
+                    "valid": False,
+                    "errors": [
+                        f"Direction REVERSED!",
+                        f"Data goes {first_station} → {last_station}",
+                        f"But selected route is {expected_from} → {expected_to}",
+                        f"Please swap from/to stations in Manual Route Override."
+                    ],
+                    "sliced_rows": sliced.height,
+                    "route_exists": route_exists,
+                    "reversed": True
+                }, status_code=200)
+
+            # Check if destination station exists in data
+            if expected_to not in all_stations:
+                return JSONResponse({
+                    "valid": False,
+                    "errors": [
+                        f"Destination station {expected_to} not found in data!",
+                        f"Data goes from {first_station} to {last_station}",
+                        f"But you selected route {expected_from} → {expected_to}",
+                        f"The CSV file may contain wrong route data.",
+                        f"Please verify the CSV file or use Manual Route Override to select the correct route."
+                    ],
+                    "sliced_rows": sliced.height,
+                    "route_exists": route_exists
+                }, status_code=200)
+
+            # Check if starting station exists in data
+            if expected_from not in all_stations:
+                return JSONResponse({
+                    "valid": False,
+                    "errors": [
+                        f"Starting station {expected_from} not found in data!",
+                        f"Data goes from {first_station} to {last_station}",
+                        f"But you selected route {expected_from} → {expected_to}",
+                        f"The CSV file may contain wrong route data.",
+                        f"Please verify the CSV file or use Manual Route Override to select the correct route."
+                    ],
+                    "sliced_rows": sliced.height,
+                    "route_exists": route_exists
+                }, status_code=200)
+
+    return {
+        "valid": len(errors) == 0,
+        "warnings": warnings,
+        "errors": errors,
+        "route_exists": route_exists,
+        "sliced_rows": sliced.height,
+        "route_key": route_key
     }
 
 

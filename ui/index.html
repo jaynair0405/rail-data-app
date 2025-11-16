@@ -205,6 +205,42 @@
     color: #d7263d;
     font-weight: 600;
   }
+  .validation-status {
+    padding: 12px 16px;
+    border-radius: 10px;
+    margin-top: 12px;
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+  .validation-status.hidden {
+    display: none;
+  }
+  .validation-status.success {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+  }
+  .validation-status.warning {
+    background: #fff3cd;
+    border: 1px solid #ffeaa7;
+    color: #856404;
+  }
+  .validation-status.error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+  }
+  .validation-status ul {
+    margin: 8px 0 0 0;
+    padding-left: 20px;
+  }
+  .validation-status li {
+    margin: 4px 0;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
   #brakeChart {
     width: 100%;
     height: 320px;
@@ -270,6 +306,36 @@
         <input id="dirResolved" readonly />
       </label>
     </div>
+  </section>
+
+  <section class="card">
+    <h3>Manual Route Override</h3>
+    <div class="row">
+      <label>Train Number (Optional)
+        <input id="manualTrainNumber" placeholder="e.g., 11030" />
+      </label>
+      <label>From Station
+        <select id="manualFromStation">
+          <option value="">-- Select From Station --</option>
+        </select>
+      </label>
+      <label>To Station
+        <select id="manualToStation">
+          <option value="">-- Select To Station --</option>
+        </select>
+      </label>
+      <label>Direction
+        <select id="manualDirection">
+          <option value="">-- Select Direction --</option>
+          <option value="UP">UP</option>
+          <option value="DN">DN</option>
+        </select>
+      </label>
+      <div style="display:flex;align-items:flex-end;">
+        <button id="btnApplyManualRoute" class="secondary">Apply Route</button>
+      </div>
+    </div>
+    <div id="validationStatus" class="validation-status hidden"></div>
   </section>
 
   <section class="card">
@@ -432,6 +498,8 @@ async function fetchTrainMeta() {
   window.__resolvedDirection = (j.direction || "").toUpperCase();
   fillSummary();
 
+  // Auto-validate route after train lookup
+  await validateRouteInData();
 }
 
 document.getElementById("btnFetchTrain").onclick = fetchTrainMeta;
@@ -662,7 +730,126 @@ async function loadStaffLookups(){
     console.warn("Failed to load staff lookups", err);
   }
 }
+
+async function populateStationDropdowns() {
+  try {
+    const resp = await fetch(`${API}/stations`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const stations = data.stations || [];
+
+    const fromSelect = document.getElementById("manualFromStation");
+    const toSelect = document.getElementById("manualToStation");
+
+    const options = stations.map(station => `<option value="${station}">${station}</option>`).join("");
+
+    fromSelect.innerHTML = '<option value="">-- Select From Station --</option>' + options;
+    toSelect.innerHTML = '<option value="">-- Select To Station --</option>' + options;
+  } catch (err) {
+    console.warn("Failed to load stations", err);
+  }
+}
+
+function enableAnalyzeButton() {
+  const btn = document.getElementById("btnAnalyze");
+  if (btn) btn.disabled = false;
+}
+
+function disableAnalyzeButton() {
+  const btn = document.getElementById("btnAnalyze");
+  if (btn) btn.disabled = true;
+}
+
+function showValidationStatus(result) {
+  const statusDiv = document.getElementById("validationStatus");
+  if (!statusDiv) return;
+
+  if (!result) {
+    statusDiv.className = "validation-status hidden";
+    statusDiv.innerHTML = "";
+    return;
+  }
+
+  statusDiv.classList.remove("hidden");
+
+  if (result.valid) {
+    // Valid route
+    statusDiv.className = "validation-status success";
+    let html = "<strong>✓ Route validation passed</strong>";
+    if (result.warnings && result.warnings.length > 0) {
+      html += "<ul>" + result.warnings.map(w => `<li>${w}</li>`).join("") + "</ul>";
+    }
+    statusDiv.innerHTML = html;
+    enableAnalyzeButton();
+  } else {
+    // Invalid route
+    statusDiv.className = "validation-status error";
+    let html = "<strong>✗ Route validation failed</strong>";
+    if (result.errors && result.errors.length > 0) {
+      html += "<ul>" + result.errors.map(e => `<li>${e}</li>`).join("") + "</ul>";
+    }
+    if (result.reversed) {
+      html += "<p><em>Try using Manual Route Override to swap the from/to stations.</em></p>";
+    }
+    statusDiv.innerHTML = html;
+    disableAnalyzeButton();
+  }
+}
+
+async function validateRouteInData() {
+  const criteria = getCriteria();
+
+  if (!criteria.from_station_equals || !criteria.to_station_equals) {
+    showValidationStatus(null);
+    enableAnalyzeButton(); // No validation needed if no route selected
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${API}/validate_route`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(criteria)
+    });
+
+    const result = await resp.json();
+    showValidationStatus(result);
+  } catch (err) {
+    console.warn("Failed to validate route", err);
+    showValidationStatus(null);
+    enableAnalyzeButton(); // On error, allow user to proceed
+  }
+}
+
+function applyManualRoute() {
+  const trainNum = document.getElementById("manualTrainNumber").value.trim();
+  const fromStation = document.getElementById("manualFromStation").value;
+  const toStation = document.getElementById("manualToStation").value;
+  const direction = document.getElementById("manualDirection").value;
+
+  if (!fromStation || !toStation || !direction) {
+    alert("Please select From Station, To Station, and Direction");
+    return;
+  }
+
+  // Update the main form fields
+  if (trainNum) {
+    document.getElementById("trainNumber").value = trainNum;
+  }
+  document.getElementById("fromStation").value = fromStation;
+  document.getElementById("toStation").value = toStation;
+  document.getElementById("dirResolved").value = direction;
+  window.__resolvedDirection = direction;
+
+  // Trigger validation
+  validateRouteInData();
+  fillSummary();
+}
+
+document.getElementById("btnApplyManualRoute").onclick = applyManualRoute;
+
 loadStaffLookups();
+populateStationDropdowns();
 renderBrakingTable([]);
 renderBrakingChart([]);
 renderBrakeTests(null);
