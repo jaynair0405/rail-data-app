@@ -1542,6 +1542,7 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
     limit_values = [float(x) if x is not None else None for x in df2["_LIMIT_MIN"].to_list()]
     mps_values_raw = [float(x) if x is not None else None for x in df2["_MPS"].to_list()]
     mps_values = _forward_fill(mps_values_raw)
+
     segments = _build_restriction_segments(labels, limit_values)
 
     # Map halts to chart labels (minute-aggregated)

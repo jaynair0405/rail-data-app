@@ -900,10 +900,24 @@ async function drawChart(criteria){
   const j = await r.json();
   const el = document.getElementById("chart");
   const chart = echarts.init(el);
-  const markAreas = (j.restrictions || []).map(seg => [
-    { xAxis: seg.start, yAxis: 0 },
-    { xAxis: seg.end || seg.start, yAxis: seg.limit }
-  ]);
+
+  // Build restriction markAreas, ensuring single-point restrictions have visible width
+  const markAreas = (j.restrictions || []).map(seg => {
+    let endPoint = seg.end || seg.start;
+
+    // If start === end (single minute restriction), extend to next time point
+    if (seg.start === endPoint) {
+      const startIdx = j.labels.indexOf(seg.start);
+      if (startIdx !== -1 && startIdx < j.labels.length - 1) {
+        endPoint = j.labels[startIdx + 1];
+      }
+    }
+
+    return [
+      { xAxis: seg.start, yAxis: 0 },
+      { xAxis: endPoint, yAxis: seg.limit }
+    ];
+  });
 
   // Prepare station halt markers
   const stationLabels = j.station_labels || [];
