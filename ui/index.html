@@ -463,6 +463,7 @@ function getCriteria(){
     lp_name: document.getElementById("lpInput").value || undefined,
     ncli_name: document.getElementById("ncliInput").value || undefined,
     analyst_name: document.getElementById("analystInput").value || undefined,
+    manual_override: window.__manualOverrideApplied || false,
   };
 }
 
@@ -497,6 +498,10 @@ async function fetchTrainMeta() {
   document.getElementById("toStation").value = j.to_station || "";
   document.getElementById("dirResolved").value = (j.direction || "").toUpperCase();
   window.__resolvedDirection = (j.direction || "").toUpperCase();
+
+  // Reset manual override flag when using train lookup
+  window.__manualOverrideApplied = false;
+
   fillSummary();
 
   // Auto-validate route after train lookup
@@ -841,6 +846,9 @@ function applyManualRoute() {
   document.getElementById("toStation").value = toStation;
   document.getElementById("dirResolved").value = direction;
   window.__resolvedDirection = direction;
+
+  // Track that manual override was applied
+  window.__manualOverrideApplied = true;
 
   // Trigger validation
   validateRouteInData();

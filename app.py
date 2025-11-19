@@ -1585,6 +1585,14 @@ def braking_profile(criteria: dict = Body(...)):
 def brake_tests(criteria: dict = Body(...)):
     if DF is None:
         return JSONResponse({"error": "no data loaded"}, status_code=400)
+
+    # Skip brake tests when manual override is applied
+    if criteria.get("manual_override"):
+        return {
+            "feel": {"status": "N/A"},
+            "power": {"status": "N/A"},
+        }
+
     filtered = apply_criteria(DF, criteria)
     start_station = criteria.get("from_station_equals")
     direction = criteria.get("direction_equals")
