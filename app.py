@@ -2158,7 +2158,11 @@ def export_pdf(criteria: dict = Body(...)):
     # Use unified function for both table and chart (same filtering)
     unified_data = _braking_profile_full_curve(filtered, BRAKE_OFFSETS)
 
-    brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
+    # Skip brake tests when manual override is applied
+    if criteria.get("manual_override"):
+        brake_tests = None
+    else:
+        brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
     summary = _build_summary_details(filtered, criteria)
     try:
         speed_chart = _render_speed_chart_image(chart_payload)
