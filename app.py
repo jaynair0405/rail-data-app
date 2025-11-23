@@ -91,6 +91,18 @@ SECTION_BREAKDOWN = {
     "ROHA-CSMT": ["ROHA", "PNVL", "CSMT"],
     "RN-BSR": ["RN", "ROHA", "PNVL", "BSR"],
     "ROHA-BSR": ["ROHA", "PNVL", "BSR"],
+    # LTT routes
+    "LTT-PUNE": ["LTT", "KYN", "KJT", "LNL", "PUNE"],         # Via Kalyan
+    "LTT-PUNE-PNVL": ["LTT", "DIVA", "PNVL", "KJT", "LNL", "PUNE"], # Via PNVL
+    "PUNE-LTT": ["PUNE", "LNL", "KJT", "KYN", "LTT"],         # Via Kalyan
+    "PUNE-LTT-PNVL": ["PUNE", "LNL", "KJT", "PNVL", "DIVA", "LTT"], # Via PNVL
+    "LTT-JL": ["LTT", "KYN", "KSRA", "IGP", "JL"],
+    "JL-LTT": ["JL", "IGP", "KSRA", "KYN", "LTT"],
+    "LTT-MMR": ["LTT", "KYN", "KSRA", "IGP", "MMR"],
+    "MMR-LTT": ["MMR", "IGP", "KSRA", "KYN", "LTT"],
+    "LTT-IGP": ["LTT", "KYN", "KSRA", "IGP"],
+    "LTT-RN": ["LTT", "DIVA", "PNVL", "ROHA", "CHI", "RN"],
+    "RN-LTT": ["RN", "CHI", "ROHA", "PNVL", "DIVA", "LTT"],
 }
 
 MAIL_STAFF: list[dict[str, Any]] = []
@@ -1629,36 +1641,84 @@ def _last_datetime(dataset: pl.DataFrame) -> datetime | None:
 # def _find_section_boundary(...): pass
 
 
-def _get_section_breakdown(from_station: str, to_station: str) -> list[str] | None:
+def _get_section_breakdown(from_station: str, to_station: str, dataset: pl.DataFrame) -> list[str] | None:
     """
-    Get section breakdown for a route, handling LTT/DR replacement and auto-reverse.
+    Get section breakdown for a route, handling LTT/DR replacement, auto-reverse,
+    and intelligent variant selection (via KYN vs via PNVL).
     Returns list of station codes for section boundaries, or None if not found.
     """
     from_norm = _norm_literal(from_station)
     to_norm = _norm_literal(to_station)
 
-    # Try exact match first
-    route_key = f"{from_norm}-{to_norm}"
-    breakdown = SECTION_BREAKDOWN.get(route_key)
+    # Find all matching breakdowns (including variants)
+    candidates = []
 
-    if breakdown:
-        # Replace CSMT with LTT/DR if actual end station is LTT/DR
+    # Try exact match and variants
+    route_key = f"{from_norm}-{to_norm}"
+    for key, breakdown in SECTION_BREAKDOWN.items():
+        if key == route_key or key.startswith(f"{route_key}-"):
+            candidates.append((key, breakdown, False))  # (key, breakdown, is_reversed)
+
+    # Try reverse route and its variants
+    reverse_key = f"{to_norm}-{from_norm}"
+    for key, breakdown in SECTION_BREAKDOWN.items():
+        if key == reverse_key or key.startswith(f"{reverse_key}-"):
+            candidates.append((key, breakdown, True))  # (key, breakdown, is_reversed)
+
+    if not candidates:
+        return None
+
+    # If only one candidate, use it
+    if len(candidates) == 1:
+        key, breakdown, is_reversed = candidates[0]
+        if is_reversed:
+            breakdown = list(reversed(breakdown))
+        # Replace CSMT with LTT/DR if needed
         if to_norm in ["LTT", "DR"] and "CSMT" in breakdown:
             breakdown = [to_norm if s == "CSMT" else s for s in breakdown]
-        return breakdown
-
-    # Try reverse route
-    reverse_key = f"{to_norm}-{from_norm}"
-    reverse_breakdown = SECTION_BREAKDOWN.get(reverse_key)
-
-    if reverse_breakdown:
-        # Reverse the breakdown and replace CSMT with LTT/DR if needed
-        breakdown = list(reversed(reverse_breakdown))
-        if from_norm in ["LTT", "DR"] and "CSMT" in breakdown:
+        elif from_norm in ["LTT", "DR"] and "CSMT" in breakdown and is_reversed:
             breakdown = [from_norm if s == "CSMT" else s for s in breakdown]
         return breakdown
 
-    return None
+    # Multiple candidates - score them based on actual station sequence
+    station_col = _first_matching_column(dataset.columns, "STATION", "CODE") or \
+                  _first_matching_column(dataset.columns, "STATION")
+    actual_sequence = _station_sequence_from_rows(dataset, station_col)
+
+    if not actual_sequence:
+        # No station data, just return first candidate
+        print(f"[SECTION] No station data available, using first breakdown candidate")
+        key, breakdown, is_reversed = candidates[0]
+        if is_reversed:
+            breakdown = list(reversed(breakdown))
+        if to_norm in ["LTT", "DR"] and "CSMT" in breakdown:
+            breakdown = [to_norm if s == "CSMT" else s for s in breakdown]
+        elif from_norm in ["LTT", "DR"] and "CSMT" in breakdown and is_reversed:
+            breakdown = [from_norm if s == "CSMT" else s for s in breakdown]
+        return breakdown
+
+    # Score each candidate
+    scored = []
+    for key, breakdown_orig, is_reversed in candidates:
+        breakdown = list(breakdown_orig)
+        if is_reversed:
+            breakdown = list(reversed(breakdown))
+        # Replace CSMT with LTT/DR if needed
+        if to_norm in ["LTT", "DR"] and "CSMT" in breakdown:
+            breakdown = [to_norm if s == "CSMT" else s for s in breakdown]
+        elif from_norm in ["LTT", "DR"] and "CSMT" in breakdown and is_reversed:
+            breakdown = [from_norm if s == "CSMT" else s for s in breakdown]
+
+        score = _score_route_match(breakdown, actual_sequence)
+        scored.append((score, breakdown, key))
+        print(f"[SECTION] Breakdown candidate {key}: score={score:.1f}")
+
+    # Sort by score descending
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_breakdown, best_key = scored[0]
+
+    print(f"[SECTION] Selected breakdown {best_key} with score {best_score:.1f}")
+    return best_breakdown
 
 
 def _generate_sectional_charts(dataset: pl.DataFrame, criteria: dict) -> list[io.BytesIO]:
@@ -1674,8 +1734,8 @@ def _generate_sectional_charts(dataset: pl.DataFrame, criteria: dict) -> list[io
         print("[SECTION] Missing from/to station in criteria")
         return []
 
-    # Get section breakdown for this route
-    breakdown = _get_section_breakdown(from_station, to_station)
+    # Get section breakdown for this route (with intelligent variant selection)
+    breakdown = _get_section_breakdown(from_station, to_station, dataset)
 
     if not breakdown:
         print(f"[SECTION] No section breakdown configured for {from_station} → {to_station}")
