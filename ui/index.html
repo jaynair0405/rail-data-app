@@ -185,6 +185,18 @@
     color: #d7263d;
     font-weight: 600;
   }
+  .warn-cell {
+    color: #d7263d;
+    font-weight: 600;
+  }
+  .warn-cell-critical {
+    color: #d7263d;
+    font-weight: 600;
+    background: #ffe5e5 !important;
+  }
+  .warn-row {
+    background: #ffe5e5;
+  }
   .brake-table caption {
     caption-side: bottom;
     text-align: left;
@@ -561,6 +573,7 @@ function renderBrakingTable(halts) {
 
   const rowsHtml = halts.map(halt => {
     const info = `<strong>${halt.station || "Halt"}</strong><br/><small>${halt.logging_time || ""}</small>`;
+    let rowClass = "";
     const cells = BRAKE_OFFSETS.map(offset => {
       const key = String(offset);
       const reading = halt.speeds && halt.speeds[key];
@@ -569,11 +582,17 @@ function renderBrakingTable(halts) {
       const numeric = reading && typeof reading.speed === "number" ? reading.speed : null;
       if (numeric !== null) {
         if (offset === 1000 && numeric > 70) warnClass = "warn";
-        if (offset === 100 && numeric > 10) warnClass = "warn";
+        if (offset === 100) {
+          if (numeric > 20) {
+            warnClass = "warn-cell-critical";
+          } else if (numeric > 15) {
+            warnClass = "warn-cell";
+          }
+        }
       }
       return `<td class="${warnClass}">${val}</td>`;
     }).join("");
-    return `<tr><td>${info}</td>${cells}</tr>`;
+    return `<tr class="${rowClass}"><td>${info}</td>${cells}</tr>`;
   }).join("");
   tbody.innerHTML = rowsHtml;
 }
