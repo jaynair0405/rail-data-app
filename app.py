@@ -1644,33 +1644,57 @@ def _last_datetime(dataset: pl.DataFrame) -> datetime | None:
 def _get_section_breakdown(from_station: str, to_station: str, dataset: pl.DataFrame) -> list[str] | None:
     """
     Get section breakdown for a route, handling LTT/DR replacement, auto-reverse,
-    and intelligent variant selection (via KYN vs via PNVL).
+    intelligent variant selection (via KYN vs via PNVL), and partial routes.
     Returns list of station codes for section boundaries, or None if not found.
     """
     from_norm = _norm_literal(from_station)
     to_norm = _norm_literal(to_station)
 
-    # Find all matching breakdowns (including variants)
+    # Find all matching breakdowns (including variants and partial routes)
     candidates = []
 
     # Try exact match and variants
     route_key = f"{from_norm}-{to_norm}"
     for key, breakdown in SECTION_BREAKDOWN.items():
         if key == route_key or key.startswith(f"{route_key}-"):
-            candidates.append((key, breakdown, False))  # (key, breakdown, is_reversed)
+            candidates.append((key, breakdown, False, None, None))  # (key, breakdown, is_reversed, from_idx, to_idx)
 
     # Try reverse route and its variants
     reverse_key = f"{to_norm}-{from_norm}"
     for key, breakdown in SECTION_BREAKDOWN.items():
         if key == reverse_key or key.startswith(f"{reverse_key}-"):
-            candidates.append((key, breakdown, True))  # (key, breakdown, is_reversed)
+            candidates.append((key, breakdown, True, None, None))  # (key, breakdown, is_reversed, from_idx, to_idx)
+
+    # If no exact matches, search for breakdowns that contain both stations (partial routes)
+    if not candidates:
+        for key, breakdown_orig in SECTION_BREAKDOWN.items():
+            # Check forward direction
+            if from_norm in breakdown_orig and to_norm in breakdown_orig:
+                from_idx = breakdown_orig.index(from_norm)
+                to_idx = breakdown_orig.index(to_norm)
+                if from_idx < to_idx:
+                    candidates.append((key, breakdown_orig, False, from_idx, to_idx))
+
+            # Check reverse direction
+            if from_norm in breakdown_orig and to_norm in breakdown_orig:
+                from_idx = breakdown_orig.index(from_norm)
+                to_idx = breakdown_orig.index(to_norm)
+                if from_idx > to_idx:
+                    # Reverse case: to_station appears before from_station in breakdown
+                    candidates.append((key, breakdown_orig, True, to_idx, from_idx))
 
     if not candidates:
         return None
 
     # If only one candidate, use it
     if len(candidates) == 1:
-        key, breakdown, is_reversed = candidates[0]
+        key, breakdown, is_reversed, from_idx, to_idx = candidates[0]
+
+        # Extract partial route if indices provided
+        if from_idx is not None and to_idx is not None:
+            breakdown = breakdown[from_idx:to_idx + 1]  # +1 to include to_station
+            print(f"[SECTION] Extracted partial route from {key}: {' → '.join(breakdown)}")
+
         if is_reversed:
             breakdown = list(reversed(breakdown))
         # Replace CSMT with LTT/DR if needed
@@ -1688,7 +1712,12 @@ def _get_section_breakdown(from_station: str, to_station: str, dataset: pl.DataF
     if not actual_sequence:
         # No station data, just return first candidate
         print(f"[SECTION] No station data available, using first breakdown candidate")
-        key, breakdown, is_reversed = candidates[0]
+        key, breakdown, is_reversed, from_idx, to_idx = candidates[0]
+
+        # Extract partial route if indices provided
+        if from_idx is not None and to_idx is not None:
+            breakdown = breakdown[from_idx:to_idx + 1]
+
         if is_reversed:
             breakdown = list(reversed(breakdown))
         if to_norm in ["LTT", "DR"] and "CSMT" in breakdown:
@@ -1699,8 +1728,13 @@ def _get_section_breakdown(from_station: str, to_station: str, dataset: pl.DataF
 
     # Score each candidate
     scored = []
-    for key, breakdown_orig, is_reversed in candidates:
+    for key, breakdown_orig, is_reversed, from_idx, to_idx in candidates:
         breakdown = list(breakdown_orig)
+
+        # Extract partial route if indices provided
+        if from_idx is not None and to_idx is not None:
+            breakdown = breakdown[from_idx:to_idx + 1]
+
         if is_reversed:
             breakdown = list(reversed(breakdown))
         # Replace CSMT with LTT/DR if needed
@@ -1710,14 +1744,15 @@ def _get_section_breakdown(from_station: str, to_station: str, dataset: pl.DataF
             breakdown = [from_norm if s == "CSMT" else s for s in breakdown]
 
         score = _score_route_match(breakdown, actual_sequence)
-        scored.append((score, breakdown, key))
-        print(f"[SECTION] Breakdown candidate {key}: score={score:.1f}")
+        partial_label = f" (partial: {' → '.join(breakdown)})" if from_idx is not None else ""
+        scored.append((score, breakdown, key, partial_label))
+        print(f"[SECTION] Breakdown candidate {key}{partial_label}: score={score:.1f}")
 
     # Sort by score descending
     scored.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_breakdown, best_key = scored[0]
+    best_score, best_breakdown, best_key, best_label = scored[0]
 
-    print(f"[SECTION] Selected breakdown {best_key} with score {best_score:.1f}")
+    print(f"[SECTION] Selected breakdown {best_key}{best_label} with score {best_score:.1f}")
     return best_breakdown
 
 
