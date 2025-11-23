@@ -2018,29 +2018,74 @@ def _render_pdf_report(
         story.append(Spacer(1, 16))
 
     if halts:
+        # Deduplicate halts occurring at the same station within 600 meters
+        filtered_halts = []
+        seen_distances: dict[str, float] = {}
+        last_station = None
+        last_distance = None
+        for halt in halts:
+            station = (halt.get("station") or "").strip().upper()
+            distance = float(halt.get("distance_m") or 0.0)
+            if station and station == last_station and last_distance is not None:
+                if abs(distance - last_distance) < 600.0:
+                    continue  # Skip very close halts in same station
+            filtered_halts.append(halt)
+            last_station = station
+            last_distance = distance
+
         story.append(Paragraph("Braking Pattern Table", styles["Heading2"]))
         header = ["Halt"] + [f"{offset} m" for offset in BRAKE_OFFSETS] + ["0 m"]
         data = [header]
-        for halt in halts[:8]:
+
+        # Track cells that need warning background or red text
+        warning_cells = []  # List of (row, col) tuples for red background
+        warn_text_cells = []  # List of (row, col) tuples for red text only
+
+        for row_idx, halt in enumerate(filtered_halts, start=1):  # start=1 because row 0 is header
             row = [halt.get("station") or f"Halt {halt.get('sequence')}"]
-            for offset in BRAKE_OFFSETS:
+            for col_idx, offset in enumerate(BRAKE_OFFSETS, start=1):  # start=1 because col 0 is halt name
                 reading = (halt.get("speeds") or {}).get(str(offset))
                 if reading and isinstance(reading.get("speed"), (int, float)):
-                    row.append(f"{reading['speed']:.1f}")
+                    speed = reading['speed']
+                    row.append(f"{speed:.1f}")
+
+                    # Apply conditional formatting rules
+                    if offset == 100 and speed > 20:
+                        warning_cells.append((col_idx, row_idx))
+                    elif offset == 20 and speed >= 10:
+                        warning_cells.append((col_idx, row_idx))
+                    elif offset == 1000 and speed > 70:
+                        warn_text_cells.append((col_idx, row_idx))
                 else:
                     row.append("—")
             row.append("0.0")
             data.append(row)
+
         col_count = len(header)
         brake_table = Table(
             data,
             colWidths=[120] + [ (doc.width - 120) / (col_count - 1) ] * (col_count - 1),
         )
-        brake_table.setStyle(TableStyle([
+
+        # Build table style with conditional cell backgrounds
+        table_style = [
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ]))
+        ]
+
+        # Add red background for critical warning cells (100m > 20, 20m >= 10)
+        warning_color = colors.Color(1, 0.898, 0.898)  # #ffe5e5 in RGB
+        red_text = colors.Color(0.843, 0.149, 0.239)  # #d7263d
+        for col, row in warning_cells:
+            table_style.append(("BACKGROUND", (col, row), (col, row), warning_color))
+            table_style.append(("TEXTCOLOR", (col, row), (col, row), red_text))
+
+        # Add red text only for moderate warnings (1000m > 70)
+        for col, row in warn_text_cells:
+            table_style.append(("TEXTCOLOR", (col, row), (col, row), red_text))
+
+        brake_table.setStyle(TableStyle(table_style))
         story.append(brake_table)
         story.append(Spacer(1, 16))
 
@@ -2088,8 +2133,8 @@ def _render_pdf_report(
 
 def _generate_pdf_filename(filtered_df: pl.DataFrame, criteria: dict) -> str:
     """
-    Generate PDF filename in format: DDMMYY-TRAINNUMBER-LPNAME.pdf
-    Example: 151125-12319-surendra.pdf
+    Generate PDF filename in format: DriverName-TrainNumber-LocoNumber-Date.pdf
+    Example: BP Mittal-16345-30310-22/11/25.pdf (slashes replaced with safe chars)
     """
     # Extract date of working from first row
     date_str = ""
@@ -2121,25 +2166,28 @@ def _generate_pdf_filename(filtered_df: pl.DataFrame, criteria: dict) -> str:
                 except Exception:
                     pass
 
-    # Get train number (sanitize)
-    train_num = str(criteria.get("train_number", "")).strip()
-    if not train_num:
-        train_num = "unknown"
+    # Get train number
+    train_num = str(criteria.get("train_number", "")).strip() or "unknown"
 
-    # Get LP name (sanitize: lowercase, remove spaces/special chars)
-    lp_name = str(criteria.get("lp_name", "")).strip().lower()
-    if not lp_name:
-        lp_name = "unknown"
-    else:
-        # Remove special characters, keep only alphanumeric
-        lp_name = re.sub(r'[^a-z0-9]', '', lp_name)
+    # Get loco number
+    loco_num = str(criteria.get("loco_number", "")).strip() or "unknown"
 
-    # Fallback to timestamp if date extraction failed
+    # Driver name (LP)
+    raw_driver = str(criteria.get("lp_name", "")).strip()
+    driver_name = raw_driver if raw_driver else "Unknown Driver"
+    driver_name = re.sub(r"[^A-Za-z0-9 _-]", "", driver_name).strip()
+    if not driver_name:
+        driver_name = "Unknown Driver"
+
+    # Fallback to current date if extraction failed
     if not date_str:
-        date_str = datetime.now().strftime("%d%m%y")
-
-    # Build filename
-    filename = f"{date_str}-{train_num}-{lp_name}.pdf"
+        date_str = datetime.now().strftime("%d-%m-%y")
+    else:
+        # if already digits (ddmmyy) reformat to dd-mm-yy
+        if re.fullmatch(r"\d{6}", date_str):
+            date_str = f"{date_str[:2]}-{date_str[2:4]}-{date_str[4:]}"
+    safe_date = date_str.replace("/", "-")
+    filename = f"{driver_name}-{train_num}-{loco_num}-{safe_date}.pdf"
     return filename
 
 
