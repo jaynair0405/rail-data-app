@@ -589,6 +589,9 @@ function renderBrakingTable(halts) {
             warnClass = "warn-cell";
           }
         }
+        if (offset === 20 && numeric >= 10) {
+          warnClass = "warn-cell-critical";
+        }
       }
       return `<td class="${warnClass}">${val}</td>`;
     }).join("");
