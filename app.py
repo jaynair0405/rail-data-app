@@ -2050,8 +2050,11 @@ def _render_pdf_report(
                     row.append(f"{speed:.1f}")
 
                     # Apply conditional formatting rules
-                    if offset == 100 and speed > 20:
-                        warning_cells.append((col_idx, row_idx))
+                    if offset == 100:
+                        if speed > 20:
+                            warning_cells.append((col_idx, row_idx))  # Red background + text
+                        elif speed > 15:
+                            warn_text_cells.append((col_idx, row_idx))  # Red text only
                     elif offset == 20 and speed >= 10:
                         warning_cells.append((col_idx, row_idx))
                     elif offset == 1000 and speed > 70:
