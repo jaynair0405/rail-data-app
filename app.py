@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 
+__version__ = "1.2.0"
+
 try:  # Optional heavy deps for PDF export
     import matplotlib  # type: ignore
     matplotlib.use("Agg")

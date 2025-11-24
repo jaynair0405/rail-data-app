@@ -1,0 +1,44 @@
+Rail Data Analysis App - Version History
+========================================
+
+v1.2.0 (2025-11-24)
+-------------------
+NEW FEATURES:
+- Intelligent sectional chart generation with automatic route variant detection
+  * System now auto-selects correct route (via KYN vs via PNVL) based on actual CSV data
+  * Uses station sequence scoring to pick best matching route variant
+- Partial route support for manual override scenarios
+  * Can now analyze sub-routes (e.g., LNL → KYN) when using manual override
+  * Automatically extracts relevant section breakdown from larger routes
+- Added sectional breakdowns for all LTT routes
+  * LTT-PUNE (via KYN and via PNVL)
+  * LTT-JL, LTT-MMR, LTT-IGP, LTT-RN
+
+IMPROVEMENTS:
+- Sectional speed profiles now generate all sections for PNVL route variant
+- Enhanced logging shows which breakdown variant was selected and scoring
+- Better handling of PSR restrictions for single-minute segments
+
+BUG FIXES:
+- Fixed sectional charts only showing partial sections (e.g., only KJT-LNL and LNL-PUNE)
+- PSR restrictions with single-minute duration now visible on charts
+- Brake test formatting now properly applied in PDF exports
+- Brake tests correctly skipped when manual route override is applied
+
+DATA UPDATES:
+- Refined PSR coordinates for KJT-KYN section (restrictions 43-44, 101-102)
+
+v1.1.0 (Previous)
+-----------------
+- Route validation system
+- Multiple file upload for overnight journeys
+- Dynamic PDF filenames
+- Brake pattern conditional formatting
+
+v1.0.0 (Initial)
+----------------
+- Initial release
+- PDF export with smooth braking curves
+- Speed profile analysis
+- Brake test validation
+- MPS and PSR overlay on charts
