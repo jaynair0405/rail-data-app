@@ -29,6 +29,9 @@ htmlcov/
 
 # Sensitive/Generated Data - DO NOT COMMIT
 # ==========================================
+# Environment files with credentials
+.env
+
 # Real telemetry CSV files (contain sensitive train data)
 *.csv
 !base-data/*.csv  # EXCEPT base-data CSVs (reference data is OK)
