@@ -1600,13 +1600,6 @@ def brake_tests(criteria: dict = Body(...)):
     if DF is None:
         return JSONResponse({"error": "no data loaded"}, status_code=400)
 
-    # Skip brake tests when manual override is applied
-    if criteria.get("manual_override"):
-        return {
-            "feel": {"status": "N/A"},
-            "power": {"status": "N/A"},
-        }
-
     filtered = apply_criteria(DF, criteria)
     start_station = criteria.get("from_station_equals")
     direction = criteria.get("direction_equals")
@@ -2306,11 +2299,7 @@ def export_pdf(criteria: dict = Body(...)):
     # Use unified function for both table and chart (same filtering)
     unified_data = _braking_profile_full_curve(filtered, BRAKE_OFFSETS)
 
-    # Skip brake tests when manual override is applied
-    if criteria.get("manual_override"):
-        brake_tests = None
-    else:
-        brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
+    brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
     summary = _build_summary_details(filtered, criteria)
     try:
         speed_chart = _render_speed_chart_image(chart_payload)
