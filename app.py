@@ -1,6 +1,8 @@
 from fastapi import FastAPI, UploadFile, Body, Query
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import Request, HTTPException
+from auth import get_current_user 
 import polars as pl
 import pandas as pd
 import io, time, re, math, sys
@@ -39,7 +41,8 @@ app.mount("/ui", StaticFiles(directory="ui", html=True), name="ui")
 
 @app.get("/")
 def root():
-    return RedirectResponse(url="/ui/")
+    # return RedirectResponse(url="/ui/")
+    return RedirectResponse(url="/spm/rtis/ui/")
 
 # ------------------------------
 # Global in-memory DF for analysis CSV
@@ -518,7 +521,18 @@ def load_route_graph():
 
 load_route_graph()
 
+@app.get("/api/current-user")
+async def api_current_user(request: Request):
+    user = request.state.user  # set by your auth middleware/dependency
+    return {"ok": True, "user": user}
 
+
+@app.get("/rtis")
+def rtis_home(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="http://localhost:3000/")  # or your bbtro login/landing
+    return RedirectResponse(url="/spm/rtis/ui/")
 # ------------------------------
 # Health check
 # ------------------------------

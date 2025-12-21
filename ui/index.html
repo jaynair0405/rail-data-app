@@ -355,19 +355,23 @@
     <h3>Crew & CLI</h3>
     <div class="row">
       <label>LP
-        <input id="lpInput" list="lpOptions" placeholder="Start typing name" autocomplete="off" />
-      </label>
-      <label>NCLI
-        <input id="ncliInput" list="cliOptions" placeholder="Start typing name" autocomplete="off" />
-      </label>
+  <input id="lpInput" list="lpOptions" placeholder="Start typing name" autocomplete="off" />
+  <input type="hidden" id="lpHrmsId" />
+  <input type="hidden" id="lpCliId" />
+</label>
+
+<label>NCLI
+  <input id="ncliInput" readonly placeholder="Auto from staff master" />
+</label>
       <label>Analyzed By
-        <input id="analystInput" list="cliOptions" placeholder="Start typing name" autocomplete="off" />
-      </label>
-    </div>
+  <input id="analystInput" list="analystOptions" placeholder="Defaults to NCLI (editable)" autocomplete="off" />
+  <input type="hidden" id="analystCliId" />
+</label>
   </section>
 
   <datalist id="lpOptions"></datalist>
   <datalist id="cliOptions"></datalist>
+  <datalist id="analystOptions"></datalist>
 
   <section class="card">
     <h3>Actions</h3>
@@ -459,8 +463,15 @@
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
 <script>
-const API = ""; // same-origin
+const API = "/spm/rtis"; // same-origin
 const STAFF = { lp: [], cli: [] };
+const NODE_DIV_API = ""; // same origin (bbtro)
+let __lpLabelToHrms = new Map();
+let __lpResolved = null;
+let __lpSearchTimer = null;
+let __cliLabelToId = new Map();
+let __cliSearchTimer = null;
+
 const BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20];
 const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
 
@@ -472,8 +483,11 @@ function getCriteria(){
     train_number: document.getElementById("trainNumber").value || undefined,
     loco_number: document.getElementById("locoNumber").value || undefined,
     coach_type: document.getElementById("coachType").value || undefined,
-    lp_name: document.getElementById("lpInput").value || undefined,
-    ncli_name: document.getElementById("ncliInput").value || undefined,
+    lp_hrms_id: document.getElementById("lpHrmsId").value || undefined,
+    cli_id: document.getElementById("lpCliId").value || undefined,
+    analyst_cli_id: document.getElementById("analystCliId").value || undefined,
+
+
     analyst_name: document.getElementById("analystInput").value || undefined,
     manual_override: window.__manualOverrideApplied || false,
   };
@@ -524,10 +538,49 @@ document.getElementById("btnFetchTrain").onclick = fetchTrainMeta;
 document.getElementById("trainNumber").addEventListener("keydown", (e) => {
   if (e.key === "Enter") fetchTrainMeta();
 });
-["trainNumber","locoNumber","lpInput","ncliInput","analystInput"].forEach(id => {
+["trainNumber","locoNumber","analystInput"].forEach(id => {
   const el = document.getElementById(id);
   if (el) el.addEventListener("input", fillSummary);
 });
+
+const lpInputEl = document.getElementById("lpInput");
+
+// Start with Analyze disabled until valid LP + CLI
+clearLPResolved();
+
+lpInputEl.addEventListener("input", async (e) => {
+  const val = e.target.value || "";
+
+  // Any typing invalidates selection until a valid option is chosen again
+  clearLPResolved();
+
+  // Live search (debounced)
+  clearTimeout(__lpSearchTimer);
+  __lpSearchTimer = setTimeout(() => {
+    // only search when user typed enough; else load default list
+    if (val.trim().length >= 2) refreshLpDatalist(val.trim());
+    else refreshLpDatalist("");
+  }, 250);
+
+  // If user picked an exact datalist option, resolve it
+  const hrms = __lpLabelToHrms.get(val);
+  if (!hrms) return;
+
+  const resp = await fetch(`/api/division/rtis/lp/${encodeURIComponent(hrms)}`);
+  const j = await resp.json();
+  if (!resp.ok || !j.success) {
+    alert(j.error || "LP resolve failed");
+    return;
+  }
+
+  // Store resolved staff snapshot
+  setLPResolved(j.data);
+
+  // Optional: replace visible input with clean name (but keep strictness)
+  // If you prefer to keep full label, comment this line.
+  lpInputEl.value = j.data.name;
+});
+
 
 function optionLabel(entry) {
   if (!entry) return "";
@@ -543,6 +596,126 @@ function populateDatalist(id, entries) {
     .map(entry => `<option value="${entry.name || ""}">${optionLabel(entry)}</option>`)
     .join("");
 }
+
+function makeLpLabel(r) {
+  const cms = r.current_cms_id ? r.current_cms_id : "CMS?";
+  return `${r.name} (${r.hrms_id}) — ${cms}`;
+}
+
+async function refreshLpDatalist(q) {
+  const url = `/api/division/rtis/lp-search?q=${encodeURIComponent(q || "")}`;
+  const resp = await fetch(url);
+  const j = await resp.json();
+
+  if (!resp.ok || !j.success) {
+    console.warn("LP search failed", j);
+    return;
+  }
+
+  const dl = document.getElementById("lpOptions");
+  dl.innerHTML = "";
+  __lpLabelToHrms = new Map();
+
+  (j.data || []).forEach(r => {
+    const label = makeLpLabel(r);
+    const opt = document.createElement("option");
+    opt.value = label;
+    dl.appendChild(opt);
+    __lpLabelToHrms.set(label, r.hrms_id);
+  });
+}
+
+function setLPResolved(lp) {
+  __lpResolved = lp;
+
+  document.getElementById("lpHrmsId").value = lp.hrms_id || "";
+  document.getElementById("lpCliId").value = lp.current_cli_id || "";
+
+  // Lock NCLI from staff master
+  document.getElementById("ncliInput").value = lp.cli_name || "";
+  // Default Analyst = NCLI (only if user hasn't overridden)
+const analystCliIdEl = document.getElementById("analystCliId");
+const analystInputEl = document.getElementById("analystInput");
+
+if (!analystCliIdEl.value) {
+  // Store CLI ID snapshot for analyst
+  analystCliIdEl.value = lp.current_cli_id ? String(lp.current_cli_id) : "";
+
+  // Show a simple display value (keep it readable)
+  analystInputEl.value = lp.cli_name ? lp.cli_name : "";
+}
+
+
+  // Enforce: cannot analyze if mapping missing
+  const ok = !!lp.hrms_id && !!lp.current_cli_id;
+  document.getElementById("btnAnalyze").disabled = !ok;
+  document.getElementById("btnExport").disabled = !ok;
+
+  fillSummary();
+}
+
+function clearLPResolved() {
+  __lpResolved = null;
+  document.getElementById("lpHrmsId").value = "";
+  document.getElementById("lpCliId").value = "";
+  document.getElementById("ncliInput").value = "";
+  document.getElementById("analystCliId").value = "";
+document.getElementById("analystInput").value = "";
+
+  document.getElementById("btnAnalyze").disabled = true;
+  document.getElementById("btnExport").disabled = true;
+
+  fillSummary();
+}
+function makeCliLabel(c) {
+  const cms = c.cmsid ? c.cmsid : "CMS?";
+  return `${c.cli_name} — ${cms}`;
+}
+
+async function refreshAnalystCliDatalist(q) {
+  const url = `/api/division/rtis/cli-search?q=${encodeURIComponent(q || "")}`;
+  const resp = await fetch(url);
+  const j = await resp.json();
+
+  if (!resp.ok || !j.success) {
+    console.warn("CLI search failed", j);
+    return;
+  }
+
+  const dl = document.getElementById("analystOptions");
+  dl.innerHTML = "";
+  __cliLabelToId = new Map();
+
+  (j.data || []).forEach(c => {
+    const label = makeCliLabel(c);
+    const opt = document.createElement("option");
+    opt.value = label;
+    dl.appendChild(opt);
+    __cliLabelToId.set(label, String(c.cli_id));
+  });
+}
+const analystInputEl = document.getElementById("analystInput");
+
+analystInputEl.addEventListener("input", (e) => {
+  const val = e.target.value || "";
+
+  // Debounced search
+  clearTimeout(__cliSearchTimer);
+  __cliSearchTimer = setTimeout(() => {
+    if (val.trim().length >= 2) refreshAnalystCliDatalist(val.trim());
+    else refreshAnalystCliDatalist("");
+  }, 250);
+
+  // Strict selection: only accept exact option label
+  const cliId = __cliLabelToId.get(val);
+  if (cliId) {
+    document.getElementById("analystCliId").value = cliId;
+  } else {
+    document.getElementById("analystCliId").value = "";
+  }
+
+  fillSummary();
+});
 
 function formatDisplayDate(value) {
   if (!value) return "—";
@@ -745,20 +918,37 @@ function extractWorkingDate(sample) {
   return datePart || null;
 }
 
+// async function loadStaffLookups(){
+//   try {
+//     const resp = await fetch(`${API}/lookup/staff`);
+//     if (!resp.ok) return;
+//     const data = await resp.json();
+//     STAFF.lp = Array.isArray(data.lp) ? data.lp : [];
+//     STAFF.cli = Array.isArray(data.cli) ? data.cli : [];
+//     populateDatalist("lpOptions", STAFF.lp);
+//     populateDatalist("cliOptions", STAFF.cli);
+//   } catch (err) {
+//     console.warn("Failed to load staff lookups", err);
+//   }
+// }
 async function loadStaffLookups(){
   try {
+    // 1) LP list from Node (Division protected)
+    await refreshLpDatalist("");
+
+    // 2) Keep CLI list from FastAPI (if you already have it there)
+    // Used for Analyst datalist.
     const resp = await fetch(`${API}/lookup/staff`);
-    if (!resp.ok) return;
-    const data = await resp.json();
-    STAFF.lp = Array.isArray(data.lp) ? data.lp : [];
-    STAFF.cli = Array.isArray(data.cli) ? data.cli : [];
-    populateDatalist("lpOptions", STAFF.lp);
-    populateDatalist("cliOptions", STAFF.cli);
+    if (resp.ok) {
+      const data = await resp.json();
+      STAFF.cli = Array.isArray(data.cli) ? data.cli : [];
+      populateDatalist("cliOptions", STAFF.cli);
+    }
   } catch (err) {
     console.warn("Failed to load staff lookups", err);
   }
 }
-
+refreshAnalystCliDatalist("");
 async function populateStationDropdowns() {
   try {
     const resp = await fetch(`${API}/stations`);

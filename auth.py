@@ -9,7 +9,7 @@ from fastapi import Request, HTTPException, status
 from fastapi.responses import RedirectResponse
 import mysql.connector
 from db_config import get_db_connection
-
+from urllib.parse import unquote
 
 def parse_session_cookie(cookie_header: str) -> Optional[str]:
     """
@@ -83,12 +83,11 @@ def get_session_from_mysql(session_id: str) -> Optional[dict]:
             return None
 
         # Check if expired
-        expires_ms = row['expires']
-        now_ms = int(datetime.now().timestamp() * 1000)
+        expires_sec = int(row["expires"])
+        now_sec = int(datetime.now().timestamp())
 
-        if now_ms > expires_ms:
-            # Session expired
-            return None
+        if now_sec > expires_sec:
+            return None             
 
         # Parse session data (JSON string)
         try:
@@ -108,6 +107,15 @@ def get_session_from_mysql(session_id: str) -> Optional[dict]:
         if conn:
             conn.close()
 
+def extract_session_id_from_connect_sid(connect_sid: str | None) -> str | None:
+    if not connect_sid:
+        return None
+
+    decoded = unquote(connect_sid)          # s%3A... -> s:...
+    if decoded.startswith("s:"):
+        decoded = decoded[2:]               # remove "s:"
+    sid = decoded.split(".", 1)[0].strip()  # remove signature
+    return sid or None
 
 def get_current_user(request: Request) -> Optional[dict]:
     """
@@ -120,18 +128,24 @@ def get_current_user(request: Request) -> Optional[dict]:
         User dict with: id, username, full_name, role, realm, div_office_code, can_access_rtis
         Or None if not authenticated
     """
+    print("[AUTH] raw cookie connect.sid =", request.cookies.get("connect.sid"))
     # Get cookie header
     cookie_header = request.headers.get('cookie')
     if not cookie_header:
         return None
 
     # Extract session ID
-    session_id = parse_session_cookie(cookie_header)
+    # session_id = parse_session_cookie(cookie_header)
+
+    session_id = extract_session_id_from_connect_sid(request.cookies.get("connect.sid"))
+    print("[AUTH] extracted session_id =", session_id)
     if not session_id:
         return None
 
     # Get session from MySQL
     session_data = get_session_from_mysql(session_id)
+    print("[AUTH] session_data type =", type(session_data))
+    print("[AUTH] session_data =", session_data)
     if not session_data:
         return None
 
@@ -139,6 +153,18 @@ def get_current_user(request: Request) -> Optional[dict]:
     user = session_data.get('user')
     if not user:
         return None
+    
+    # Enforce RTIS access flag from DB (authoritative)
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT can_access_rtis FROM users WHERE id=%s LIMIT 1", (user["id"],))
+    row = cur.fetchone()
+    user["can_access_rtis"] = bool(row["can_access_rtis"])
+    cur.close()
+    conn.close()
+
+    if not row or not row.get("can_access_rtis"):
+      return None
 
     return user
 
