@@ -62,6 +62,27 @@
   opacity: 0.9;
   font-size: 0.85rem;
 }
+.app-header__back {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-right: 1rem;
+}
+.back-button {
+  background: rgba(255, 255, 255, 0.15);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.back-button:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.5);
+  transform: translateX(-2px);
+}
   .app-container {
     max-width: 1150px;
     margin: 32px auto 64px;
@@ -263,6 +284,9 @@
 </style>
 
 <header class="app-header">
+  <div class="app-header__back">
+    <button id="btnBack" class="back-button" title="Back to SPM Hub">← Back</button>
+  </div>
   <div class="app-header__title">
     <h1>CR • RTIS Insights Console</h1>
   </div>
@@ -378,6 +402,7 @@
     <div class="actions">
       <button id="btnAnalyze">Analyze</button>
       <button id="btnExport" class="secondary">Export PDF</button>
+      <button id="btnSaveAnalysis" class="secondary" style="display:none;">💾 Save Analysis</button>
     </div>
   </section>
 
@@ -471,6 +496,13 @@ let __lpResolved = null;
 let __lpSearchTimer = null;
 let __cliLabelToId = new Map();
 let __cliSearchTimer = null;
+
+// Analysis data storage
+let __uploadedFiles = [];
+let __uploadedFilesTotalSize = 0;
+let __lastPdfFilename = null;
+let __analysisCompleted = false;
+let __analysisSaved = false;
 
 const BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20];
 const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
@@ -1093,6 +1125,18 @@ document.getElementById("btnUpload").onclick = async () => {
   const files = document.getElementById("csv").files;
   if(files.length === 0){ alert("Choose at least one CSV file"); return; }
 
+  // Store file info globally for later save
+  __uploadedFiles = Array.from(files).map(f => f.name);
+  __uploadedFilesTotalSize = Array.from(files).reduce((sum, f) => sum + f.size, 0);
+  __analysisCompleted = false;
+  __analysisSaved = false;
+  window.__existingAnalysisId = null; // Reset existing analysis ID
+  const saveBtn = document.getElementById("btnSaveAnalysis");
+  saveBtn.style.display = "none";
+  saveBtn.style.opacity = "1";
+  saveBtn.textContent = "💾 Save Analysis";
+  saveBtn.title = "";
+
   const fd = new FormData();
   for (let i = 0; i < files.length; i++) {
     fd.append("files", files[i]);
@@ -1210,6 +1254,8 @@ async function drawChart(criteria){
 
 async function analyzeAndPlot(){
   const criteria = getCriteria();
+
+  // Run analysis first to get working date from data
   const r = await fetch(`${API}/analyze`, {
     method:"POST",
     headers: { "Content-Type":"application/json" },
@@ -1227,10 +1273,71 @@ async function analyzeAndPlot(){
   } else {
     delete document.getElementById("fromStation").dataset.firstDate;
   }
+
+  // NOW check if this analysis already exists (after we have working date)
+  if (workingDate && workingDate.trim()) {
+    const checkData = {
+      lp_hrms_id: criteria.lp_hrms_id,
+      working_date: workingDate,
+      train_number: criteria.train_number,
+      from_station: criteria.from_station_equals,
+      to_station: criteria.to_station_equals
+    };
+
+    try {
+      const checkResp = await fetch(`${API}/api/check-analysis-exists`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(checkData)
+      });
+
+      const checkResult = await checkResp.json();
+
+      if (checkResult.exists) {
+        const analysis = checkResult.analysis;
+        const pdfStatus = analysis.has_pdf ? "Generated ✓" : "Not Generated ✗";
+
+        const proceed = confirm(
+          `⚠️ This analysis already exists!\n\n` +
+          `Analysis ID: ${analysis.id}\n` +
+          `LP: ${analysis.lp_name} (${analysis.lp_hrms_id})\n` +
+          `Train: ${analysis.train_number} | Route: ${analysis.route}\n` +
+          `Working Date: ${analysis.working_date}\n` +
+          `Previously saved by: ${analysis.analyst_name}\n` +
+          `Saved on: ${analysis.created_at}\n` +
+          `PDF Report: ${pdfStatus}\n\n` +
+          `Continue anyway?\n` +
+          `(You can view the analysis and update it if needed)`
+        );
+
+        if (!proceed) {
+          return; // User cancelled, stop here
+        }
+
+        // Store existing analysis ID for update later
+        window.__existingAnalysisId = analysis.id;
+      } else {
+        window.__existingAnalysisId = null;
+      }
+    } catch (err) {
+      console.error("Error checking for existing analysis:", err);
+      // Continue with charts even if check fails
+      window.__existingAnalysisId = null;
+    }
+  }
   await drawChart(criteria);
   await loadBrakingProfile(criteria);
   await loadBrakeTests(criteria);
   fillSummary();
+
+  // Show Save Analysis button after successful analysis
+  __analysisCompleted = true;
+  __analysisSaved = false;
+  const saveBtn = document.getElementById("btnSaveAnalysis");
+  saveBtn.style.display = "inline-block";
+  saveBtn.style.opacity = "1";
+  saveBtn.textContent = "💾 Save Analysis";
+  saveBtn.title = "";
 }
 
 document.getElementById("btnAnalyze").onclick = analyzeAndPlot;
@@ -1254,6 +1361,9 @@ document.getElementById("btnExport").onclick = async () => {
       }
     }
 
+    // Store PDF filename for save operation
+    __lastPdfFilename = filename;
+
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -1264,6 +1374,134 @@ document.getElementById("btnExport").onclick = async () => {
     alert("Export failed. Please try again.");
     console.error(err);
   }
+};
+
+document.getElementById("btnSaveAnalysis").onclick = async () => {
+  if (!__analysisCompleted) {
+    alert("Please run analysis first");
+    return;
+  }
+
+  if (__uploadedFiles.length === 0) {
+    alert("No CSV file information available");
+    return;
+  }
+
+  // Check if already saved (this will now UPDATE instead of creating duplicate)
+  if (__analysisSaved && window.__existingAnalysisId) {
+    const confirmSave = confirm(
+      `This analysis has already been saved (ID: ${window.__existingAnalysisId}).\n\n` +
+      `Save again? This will UPDATE the existing record.`
+    );
+    if (!confirmSave) {
+      return;
+    }
+  }
+
+  try {
+    const criteria = getCriteria();
+
+    // Extract working date from fromStation dataset (raw YYYY-MM-DD format)
+    const fromStationEl = document.getElementById("fromStation");
+    const workingDate = fromStationEl ? fromStationEl.dataset.firstDate : "";
+
+    // Add working_date to criteria (backend expects it there)
+    if (workingDate && workingDate.trim()) {
+      criteria.working_date = workingDate.trim();
+    }
+
+    // Helper function to safely get element text
+    const getElementText = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.textContent.trim() : "";
+    };
+
+    // Prepare data for save endpoint
+    const saveData = {
+      criteria: criteria,
+      csv_filename: __uploadedFiles.join(", "),
+      csv_file_size: __uploadedFilesTotalSize,
+      pdf_filename: __lastPdfFilename,
+      results: {
+        // Metrics will be calculated by backend if needed
+        total_distance: null,
+        total_duration: null,
+        max_speed: null,
+        avg_speed: null,
+        halt_count: 0,
+        braking_events_count: 0
+      },
+      metadata: {
+        from_station: criteria.from_station_equals,
+        to_station: criteria.to_station_equals,
+        direction: criteria.direction_equals,
+        working_date: workingDate !== "—" ? workingDate : null,
+        section: getElementText("summarySection"),
+        lp: getElementText("summaryLP"),
+        train: getElementText("summaryTrain"),
+        loco: getElementText("summaryLoco"),
+        ncli: getElementText("summaryNCLI"),
+        analyst: getElementText("summaryAnalyst")
+      }
+    };
+
+    // Determine if this is an UPDATE or INSERT
+    const isUpdate = window.__existingAnalysisId ? true : false;
+    let r, actionWord;
+
+    if (isUpdate) {
+      // UPDATE existing analysis
+      const confirmUpdate = confirm(
+        `This will REPLACE the existing analysis (ID: ${window.__existingAnalysisId}).\n\n` +
+        `Your update will be recorded.\n\n` +
+        `Proceed?`
+      );
+
+      if (!confirmUpdate) {
+        return;
+      }
+
+      r = await fetch(`${API}/api/update-analysis/${window.__existingAnalysisId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(saveData)
+      });
+      actionWord = "updated";
+    } else {
+      // INSERT new analysis
+      r = await fetch(`${API}/api/save-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(saveData)
+      });
+      actionWord = "saved";
+    }
+
+    const result = await r.json();
+
+    if (result.success) {
+      // Mark as saved and store analysis ID for future updates
+      __analysisSaved = true;
+      window.__existingAnalysisId = result.analysis_id; // Store ID so next save becomes UPDATE
+
+      const saveBtn = document.getElementById("btnSaveAnalysis");
+      saveBtn.textContent = "✓ " + (isUpdate ? "Updated" : "Saved") + " (ID: " + result.analysis_id + ")";
+      saveBtn.style.opacity = "0.6";
+      saveBtn.title = "Click again to update";
+
+      alert(`Analysis ${actionWord} successfully!\nAnalysis ID: ${result.analysis_id}`);
+    } else {
+      alert(`Failed to ${actionWord.replace('d', '')} analysis: ${result.error}`);
+    }
+  } catch (err) {
+    alert("Failed to save analysis. Please try again.");
+    console.error(err);
+  }
+};
+
+// Back button - navigate to SPM Hub
+document.getElementById("btnBack").onclick = () => {
+  window.location.href = "/div/spm-hub.html";
 };
 
 fillSummary();

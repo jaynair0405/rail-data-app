@@ -2,7 +2,8 @@ from fastapi import FastAPI, UploadFile, Body, Query
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request, HTTPException
-from auth import get_current_user 
+from auth import get_current_user
+from db_config import get_db_connection
 import polars as pl
 import pandas as pd
 import io, time, re, math, sys
@@ -2546,6 +2547,350 @@ def validate_route(criteria: Dict[str, Any] = Body(...)):
         "sliced_rows": sliced.height,
         "route_key": route_key
     }
+
+
+# ------------------------------
+# Check if Analysis Exists (Duplicate Detection)
+# ------------------------------
+@app.post("/api/check-analysis-exists")
+async def check_analysis_exists(request: Request, data: Dict[str, Any] = Body(...)):
+    """
+    Check if an analysis already exists for the same LP, date, train, and route.
+    Used to prevent duplicates and warn users before analyzing.
+    """
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(
+            {"error": "Authentication required", "exists": False},
+            status_code=401
+        )
+
+    try:
+        lp_hrms_id = data.get("lp_hrms_id")
+        working_date = data.get("working_date")
+        train_number = data.get("train_number")
+        from_station = data.get("from_station")
+        to_station = data.get("to_station")
+
+        # If missing key fields, cannot check
+        if not all([lp_hrms_id, working_date, train_number, from_station, to_station]):
+            return {"exists": False}
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        sql = """
+            SELECT
+                id, user_id, lp_name, lp_hrms_id,
+                train_number, from_station, to_station,
+                analyst_name, created_at, pdf_filename,
+                working_date
+            FROM div_rtis_analyses
+            WHERE lp_hrms_id = %s
+              AND working_date = %s
+              AND train_number = %s
+              AND from_station = %s
+              AND to_station = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+
+        cursor.execute(sql, (lp_hrms_id, working_date, train_number, from_station, to_station))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if result:
+            # Format datetime for display
+            created_at = result['created_at'].strftime('%d-%b-%Y %H:%M') if result['created_at'] else ''
+            working_date_formatted = result['working_date'].strftime('%d-%b-%Y') if result['working_date'] else ''
+
+            return {
+                "exists": True,
+                "analysis": {
+                    "id": result['id'],
+                    "lp_name": result['lp_name'],
+                    "lp_hrms_id": result['lp_hrms_id'],
+                    "train_number": result['train_number'],
+                    "route": f"{result['from_station']} → {result['to_station']}",
+                    "analyst_name": result['analyst_name'] or 'Unknown',
+                    "created_at": created_at,
+                    "working_date": working_date_formatted,
+                    "pdf_filename": result['pdf_filename'],
+                    "has_pdf": bool(result['pdf_filename'])
+                }
+            }
+        else:
+            return {"exists": False}
+
+    except Exception as e:
+        print(f"[ERROR] check_analysis_exists: {e}")
+        return {"exists": False, "error": str(e)}
+
+
+# ------------------------------
+# Save Analysis to Database
+# ------------------------------
+@app.post("/api/save-analysis")
+async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
+    """
+    Save analysis record to div_rtis_analyses table.
+    Requires authenticated user session.
+
+    Expected data structure:
+    {
+        "criteria": {...},           # Analysis criteria (from getCriteria())
+        "csv_filename": "...",       # Uploaded CSV filename
+        "csv_file_size": 123456,     # File size in bytes
+        "pdf_filename": "...",       # Generated PDF filename (optional)
+        "results": {                 # Analysis summary metrics
+            "total_distance": 123.45,
+            "total_duration": 7200,
+            "max_speed": 110.5,
+            "avg_speed": 65.2,
+            "halt_count": 5,
+            "braking_events_count": 12
+        },
+        "notes": "...",              # Optional user notes
+        "metadata": {...}            # Optional additional JSON data
+    }
+    """
+    # Authenticate user
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(
+            {"error": "Authentication required", "success": False},
+            status_code=401
+        )
+
+    try:
+        # Extract data
+        criteria = data.get("criteria", {})
+        csv_filename = data.get("csv_filename", "")
+        csv_file_size = data.get("csv_file_size")
+        pdf_filename = data.get("pdf_filename")
+        results = data.get("results", {})
+        notes = data.get("notes")
+        metadata = data.get("metadata")
+
+        # Validate required fields
+        if not csv_filename:
+            return JSONResponse(
+                {"error": "csv_filename is required", "success": False},
+                status_code=400
+            )
+
+        # Get database connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Prepare SQL insert
+        sql = """
+            INSERT INTO div_rtis_analyses (
+                user_id, lp_hrms_id, lp_name, ncli_id, ncli_name,
+                analyst_id, analyst_name, analysis_date, working_date,
+                train_number, from_station, to_station, direction, route,
+                loco_number, coach_type, load_type, brake_position,
+                csv_filename, csv_file_size, pdf_filename,
+                total_distance, total_duration, max_speed, avg_speed,
+                halt_count, braking_events_count, notes, metadata
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s
+            )
+        """
+
+        # Prepare values
+        import json
+        values = (
+            user["id"],
+            criteria.get("lp_hrms_id"),
+            criteria.get("lp_name"),
+            criteria.get("cli_id"),  # ncli_id
+            criteria.get("ncli_name"),
+            criteria.get("analyst_cli_id"),  # analyst_id
+            criteria.get("analyst_name"),
+            datetime.now().date(),  # analysis_date
+            criteria.get("working_date"),  # Can be None
+            criteria.get("train_number"),
+            criteria.get("from_station_equals"),
+            criteria.get("to_station_equals"),
+            criteria.get("direction_equals"),
+            criteria.get("route"),  # Will be in metadata if not in criteria
+            criteria.get("loco_number"),
+            criteria.get("coach_type"),
+            criteria.get("load_type"),
+            criteria.get("brake_position"),
+            csv_filename,
+            csv_file_size,
+            pdf_filename,
+            results.get("total_distance"),
+            results.get("total_duration"),
+            results.get("max_speed"),
+            results.get("avg_speed"),
+            results.get("halt_count", 0),
+            results.get("braking_events_count", 0),
+            notes,
+            json.dumps(metadata) if metadata else None
+        )
+
+        # Execute insert
+        cursor.execute(sql, values)
+        conn.commit()
+
+        # Get the inserted ID
+        analysis_id = cursor.lastrowid
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "message": "Analysis saved successfully",
+            "analysis_id": analysis_id
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to save analysis: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+# ------------------------------
+# Update Existing Analysis
+# ------------------------------
+@app.put("/api/update-analysis/{analysis_id}")
+async def update_analysis(analysis_id: int, request: Request, data: Dict[str, Any] = Body(...)):
+    """
+    Update an existing analysis record (used when user wants to update/replace).
+    Only allows updating if user is authenticated.
+    """
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse(
+            {"error": "Authentication required", "success": False},
+            status_code=401
+        )
+
+    try:
+        criteria = data.get("criteria", {})
+        csv_filename = data.get("csv_filename", "")
+        csv_file_size = data.get("csv_file_size")
+        pdf_filename = data.get("pdf_filename")
+        results = data.get("results", {})
+        notes = data.get("notes")
+        metadata = data.get("metadata")
+
+        if not csv_filename:
+            return JSONResponse(
+                {"error": "csv_filename is required", "success": False},
+                status_code=400
+            )
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Update SQL
+        sql = """
+            UPDATE div_rtis_analyses SET
+                user_id = %s,
+                lp_hrms_id = %s,
+                lp_name = %s,
+                ncli_id = %s,
+                ncli_name = %s,
+                analyst_id = %s,
+                analyst_name = %s,
+                analysis_date = %s,
+                working_date = %s,
+                train_number = %s,
+                from_station = %s,
+                to_station = %s,
+                direction = %s,
+                route = %s,
+                loco_number = %s,
+                coach_type = %s,
+                load_type = %s,
+                brake_position = %s,
+                csv_filename = %s,
+                csv_file_size = %s,
+                pdf_filename = %s,
+                total_distance = %s,
+                total_duration = %s,
+                max_speed = %s,
+                avg_speed = %s,
+                halt_count = %s,
+                braking_events_count = %s,
+                notes = %s,
+                metadata = %s,
+                updated_at = NOW()
+            WHERE id = %s
+        """
+
+        import json
+        values = (
+            user["id"],
+            criteria.get("lp_hrms_id"),
+            criteria.get("lp_name"),
+            criteria.get("cli_id"),
+            criteria.get("ncli_name"),
+            criteria.get("analyst_cli_id"),
+            criteria.get("analyst_name"),
+            datetime.now().date(),
+            criteria.get("working_date"),
+            criteria.get("train_number"),
+            criteria.get("from_station_equals"),
+            criteria.get("to_station_equals"),
+            criteria.get("direction_equals"),
+            criteria.get("route"),
+            criteria.get("loco_number"),
+            criteria.get("coach_type"),
+            criteria.get("load_type"),
+            criteria.get("brake_position"),
+            csv_filename,
+            csv_file_size,
+            pdf_filename,
+            results.get("total_distance"),
+            results.get("total_duration"),
+            results.get("max_speed"),
+            results.get("avg_speed"),
+            results.get("halt_count", 0),
+            results.get("braking_events_count", 0),
+            notes,
+            json.dumps(metadata) if metadata else None,
+            analysis_id
+        )
+
+        cursor.execute(sql, values)
+        conn.commit()
+
+        rows_affected = cursor.rowcount
+        cursor.close()
+        conn.close()
+
+        if rows_affected > 0:
+            return {
+                "success": True,
+                "message": "Analysis updated successfully",
+                "analysis_id": analysis_id,
+                "updated": True
+            }
+        else:
+            return JSONResponse(
+                {"error": f"Analysis ID {analysis_id} not found", "success": False},
+                status_code=404
+            )
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to update analysis: {str(e)}", "success": False},
+            status_code=500
+        )
 
 
 # ------------------------------
