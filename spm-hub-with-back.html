@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SPM / RTIS Hub</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <style>
+    /* Global Reset & Font */
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background-color: #f0f2f5;
+      color: #333;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+
+    /* Back Button */
+    .back-button-container {
+      margin-bottom: 20px;
+    }
+
+    .back-button {
+      background: white;
+      color: #4f46e5;
+      border: 1px solid #e5e7eb;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      font-weight: 500;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .back-button:hover {
+      background: #f9fafb;
+      border-color: #4f46e5;
+      transform: translateX(-2px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    /* Header Styles */
+    .dashboard-header {
+      margin-bottom: 30px;
+    }
+    .dashboard-header h2 {
+      margin: 0;
+      font-size: 28px;
+      color: #1a1a1a;
+      font-weight: 700;
+    }
+    .dashboard-header p {
+      color: #666;
+      margin-top: 8px;
+    }
+
+    /* Grid Layout */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+
+    /* Card Styling */
+    .analysis-card {
+      background: white;
+      border-radius: 16px;
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.02), 0 1px 3px rgba(0,0,0,0.05);
+      transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+      display: flex;
+      flex-direction: column;
+      border: 1px solid rgba(0,0,0,0.04);
+      position: relative;
+    }
+
+    /* Hover Effects */
+    .analysis-card:hover {
+      transform: translateY(-6px);
+      box-shadow: 0 12px 24px rgba(0,0,0,0.1);
+      border-color: rgba(0,0,0,0.0);
+    }
+
+    /* Image/Icon Area */
+    .card-image {
+      height: 120px;
+      background: linear-gradient(135deg, #e0e7ff 0%, #f3f4f6 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #4f46e5;
+      font-size: 40px;
+      position: relative;
+    }
+
+    /* If you use real images, utilize this class */
+    .card-image img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Content Area */
+    .card-content {
+      padding: 20px;
+      flex-grow: 1;
+    }
+
+    .card-title {
+      font-weight: 700;
+      font-size: 18px;
+      margin-bottom: 6px;
+      color: #111;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .card-desc {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    /* Data/Metrics Section */
+    .card-stats {
+      background: #f8fafc;
+      border-top: 1px solid #edf2f7;
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .stat-box {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+
+    .stat-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: #334155;
+      margin-top: 2px;
+    }
+
+    /* Specific Theme Colors (Optional Borders) */
+    .theme-mail { border-top: 4px solid #3b82f6; } /* Blue */
+    .theme-suburban { border-top: 4px solid #8b5cf6; } /* Purple */
+    .theme-goods { border-top: 4px solid #f59e0b; } /* Orange */
+    .theme-ghat { border-top: 4px solid #10b981; } /* Green */
+    .theme-future { border-top: 4px solid #94a3b8; border-style: dashed;}
+
+    .badge {
+        font-size: 10px;
+        background: #e0f2fe;
+        color: #0369a1;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-weight: 600;
+    }
+
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Back Button -->
+    <div class="back-button-container">
+      <a href="/div/" class="back-button">
+        <i class="fa-solid fa-arrow-left"></i>
+        Back to Dashboard
+      </a>
+    </div>
+
+    <div class="dashboard-header">
+      <h2>SPM / RTIS Analysis Hub</h2>
+      <p>Select a module below to view detailed reports and analytics.</p>
+    </div>
+
+    <div class="card-grid">
+
+      <a href="/spm/rtis/rtis" class="analysis-card theme-mail">
+
+        <div class="card-image">
+           <i class="fa-solid fa-train-subway"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title">
+            Mail / Express
+            <span class="badge">LIVE</span>
+          </div>
+          <div class="card-desc">
+            RTIS & SPM analysis for Mail and Express trains. Speed profile overlay and run-time analysis.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">124</span> </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">4,520</span> </div>
+        </div>
+      </a>
+
+      <a href="link_to_suburban" class="analysis-card theme-suburban">
+        <div class="card-image" style="color: #8b5cf6; background: #f5f3ff;">
+          <i class="fa-solid fa-users"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title">Suburban SPM</div>
+          <div class="card-desc">
+            Peak hour analysis and punctuality metrics for Suburban network.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">45</span>
+          </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">1,202</span>
+          </div>
+        </div>
+      </a>
+
+      <a href="link_to_goods_kyn" class="analysis-card theme-goods">
+        <div class="card-image" style="color: #f59e0b; background: #fffbeb;">
+          <i class="fa-solid fa-train-tram"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title">Goods - KYN</div>
+          <div class="card-desc">
+            Freight operations analysis focused on Kalyan (KYN) base and yards.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">12</span>
+          </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">850</span>
+          </div>
+        </div>
+      </a>
+
+      <a href="link_to_goods_pnvl" class="analysis-card theme-goods">
+        <div class="card-image" style="color: #d97706; background: #fffbeb;">
+            <i class="fa-solid fa-industry"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title">Goods - PNVL</div>
+          <div class="card-desc">
+            Panvel area freight movement, loading/unloading and pathing analysis.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">18</span>
+          </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">920</span>
+          </div>
+        </div>
+      </a>
+
+      <a href="link_to_se_ghat" class="analysis-card theme-ghat">
+        <div class="card-image" style="color: #059669; background: #ecfdf5;">
+            <i class="fa-solid fa-mountain"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title">SE Ghat Analysis</div>
+          <div class="card-desc">
+            Banker attachment/detachment and run times for South East Ghats.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">8</span>
+          </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">340</span>
+          </div>
+        </div>
+      </a>
+
+      <a href="link_to_ne_ghat" class="analysis-card theme-ghat">
+        <div class="card-image" style="color: #10b981; background: #ecfdf5;">
+            <i class="fa-solid fa-mountain-sun"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title">NE Ghat Analysis</div>
+          <div class="card-desc">
+            Performance metrics and stalling analysis for North East Ghats.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">11</span>
+          </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">410</span>
+          </div>
+        </div>
+      </a>
+
+      <a href="#" class="analysis-card theme-future" style="background: #f8fafc; opacity: 0.8;">
+        <div class="card-image" style="color: #94a3b8; background: #f1f5f9;">
+            <i class="fa-solid fa-plus"></i>
+        </div>
+        <div class="card-content">
+          <div class="card-title" style="color: #64748b;">Future Module</div>
+          <div class="card-desc">
+            Reserved for upcoming analysis modules or Crew Management integration.
+          </div>
+        </div>
+        <div class="card-stats">
+          <div class="stat-box">
+            <span class="stat-label">Yesterday</span>
+            <span class="stat-value">-</span>
+          </div>
+          <div class="stat-box" style="text-align: right;">
+            <span class="stat-label">Total Analyzed</span>
+            <span class="stat-value">-</span>
+          </div>
+        </div>
+      </a>
+
+    </div>
+
+    <div style="margin-top: 30px; text-align: center; color: #888; font-size: 13px;">
+      <i class="fa-solid fa-lock"></i> Access restricted to Mumbai Division Operating Officers.
+    </div>
+  </div>
+
+</body>
+</html>

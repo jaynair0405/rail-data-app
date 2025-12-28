@@ -404,6 +404,13 @@
       <button id="btnExport" class="secondary">Export PDF</button>
       <button id="btnSaveAnalysis" class="secondary" style="display:none;">💾 Save Analysis</button>
     </div>
+    <div class="actions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
+      <a href="/spm/rtis/ui/reports.html" style="text-decoration: none;">
+        <button class="secondary" style="width: 100%;">
+          <i class="fa-solid fa-chart-line"></i> View Analytics & Reports
+        </button>
+      </a>
+    </div>
   </section>
 
   <section class="card">
@@ -480,6 +487,32 @@
         </thead>
         <tbody>
           <tr><td colspan="4">No tests run.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Deceleration Metrics</h3>
+    <div class="brake-table-wrapper">
+      <table class="brake-table" id="decelerationTable">
+        <thead>
+          <tr>
+            <th>Halt</th>
+            <th>Speed @1000m</th>
+            <th>Speed @500m</th>
+            <th>Speed @250m</th>
+            <th>Decel 1000→0</th>
+            <th>Decel 500→0</th>
+            <th>Decel 250→0</th>
+            <th>Decel 1000→500</th>
+            <th>Decel 500→250</th>
+            <th>Decel 1000→250</th>
+            <th>Sharp Brake</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="11">Run analysis to see deceleration metrics.</td></tr>
         </tbody>
       </table>
     </div>
@@ -886,6 +919,43 @@ function renderBrakeTests(results) {
   tbody.innerHTML = html;
 }
 
+function formatDecelCell(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return Number(value).toFixed(2);
+}
+
+function renderDecelerationTable(rows) {
+  const table = document.getElementById("decelerationTable");
+  if (!table) return;
+  const tbody = table.querySelector("tbody");
+  if (!rows || !rows.length) {
+    tbody.innerHTML = `<tr><td colspan="11">No deceleration data available.</td></tr>`;
+    return;
+  }
+  const html = rows.map(row => {
+    const sharpSpeed = row.sharp_brake_speed_kmph;
+    const sharpDistance = row.sharp_brake_distance_m;
+    const sharpTime = row.sharp_brake_time;
+    const sharpText = sharpSpeed != null && sharpDistance != null
+      ? `${formatSpeedCell(sharpSpeed)} km/h @ ${Math.round(sharpDistance)} m${sharpTime ? `<br/><small>${sharpTime}</small>` : ""}`
+      : "—";
+    return `<tr>
+      <td>${row.station || "—"}<br/><small>${row.halt_time || ""}</small></td>
+      <td>${formatSpeedCell(row.speed_1000_kmph)}</td>
+      <td>${formatSpeedCell(row.speed_500_kmph)}</td>
+      <td>${formatSpeedCell(row.speed_250_kmph)}</td>
+      <td>${formatDecelCell(row.decel_full_1000_mps2)}</td>
+      <td>${formatDecelCell(row.decel_full_500_mps2)}</td>
+      <td>${formatDecelCell(row.decel_full_250_mps2)}</td>
+      <td>${formatDecelCell(row.decel_1000_to_500_mps2)}</td>
+      <td>${formatDecelCell(row.decel_500_to_250_mps2)}</td>
+      <td>${formatDecelCell(row.decel_1000_to_250_mps2)}</td>
+      <td>${sharpText}</td>
+    </tr>`;
+  }).join("");
+  tbody.innerHTML = html;
+}
+
 async function loadBrakingProfile(criteria) {
   try {
     const resp = await fetch(`${API}/braking_profile`, {
@@ -897,15 +967,18 @@ async function loadBrakingProfile(criteria) {
     if (!resp.ok || data.error) {
       renderBrakingTable([]);
       renderBrakingChart([]);
+      renderDecelerationTable([]);
       return;
     }
     const halts = data.halts || [];
     renderBrakingTable(halts);
     renderBrakingChart(halts);
+    renderDecelerationTable(data.deceleration || []);
   } catch (err) {
     console.warn("Failed to load braking profile", err);
     renderBrakingTable([]);
     renderBrakingChart([]);
+    renderDecelerationTable([]);
   }
 }
 

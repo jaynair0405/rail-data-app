@@ -11,6 +11,7 @@ from typing import Dict, Any, List
 from datetime import datetime
 from pathlib import Path
 import numpy as np
+import os
 
 __version__ = "1.2.0"
 
@@ -37,7 +38,12 @@ except ImportError:
 # ------------------------------
 # App & Static UI
 # ------------------------------
-app = FastAPI()
+# app = FastAPI()
+ROOT_PATH = os.getenv("ROOT_PATH", "")
+app = FastAPI(
+    title="CR RTIS Analysis API",
+    root_path=ROOT_PATH
+)
 app.mount("/ui", StaticFiles(directory="ui", html=True), name="ui")
 
 @app.get("/")
@@ -1606,8 +1612,35 @@ def braking_profile(criteria: dict = Body(...)):
     if DF is None:
         return JSONResponse({"error": "no data loaded"}, status_code=400)
     filtered = apply_criteria(DF, criteria)
-    halts = _braking_profile(filtered, BRAKE_OFFSETS)
-    return {"offsets": BRAKE_OFFSETS, "halts": halts}
+    analysis_offsets = list(BRAKE_OFFSETS)
+    extras: list[int] = []
+    if 500 not in analysis_offsets:
+        extras.append(500)
+    if 250 not in analysis_offsets:
+        extras.append(250)
+    if extras:
+        analysis_offsets = sorted(set(analysis_offsets + extras), reverse=True)
+    halts = _braking_profile(filtered, analysis_offsets)
+    decel_table = _halt_deceleration_metrics(
+        halts,
+        start_station=criteria.get("from_station_equals"),
+        end_station=criteria.get("to_station_equals"),
+    )
+    extras_to_strip: list[str] = []
+    if 500 not in BRAKE_OFFSETS:
+        extras_to_strip.append("500")
+    if 250 not in BRAKE_OFFSETS:
+        extras_to_strip.append("250")
+    if extras_to_strip:
+        for entry in halts:
+            entry_speeds = entry.get("speeds", {})
+            for key in extras_to_strip:
+                entry_speeds.pop(key, None)
+    return {
+        "offsets": BRAKE_OFFSETS,
+        "halts": halts,
+        "deceleration": decel_table,
+    }
 
 
 @app.post("/brake_tests")
@@ -2043,6 +2076,7 @@ def _render_pdf_report(
     halts: list[dict[str, Any]],
     brake_tests: dict[str, Any],
     sectional_charts: list[io.BytesIO] | None = None,
+    boundary_row_idx: int | None = None,
 ) -> io.BytesIO:
     if SimpleDocTemplate is None:
         raise RuntimeError("reportlab is required for PDF export. Please install it.")
@@ -2138,6 +2172,14 @@ def _render_pdf_report(
             last_station = station
             last_distance = distance
 
+        # Determine zone boundary for 1000m threshold
+        from_station = summary.get("from_station")
+        to_station = summary.get("to_station")
+        direction = summary.get("direction")
+
+        # Find boundary halt index using the pre-computed boundary row index
+        boundary_halt_idx = _find_boundary_halt_index(filtered_halts, boundary_row_idx)
+
         story.append(Paragraph("Braking Pattern Table", styles["Heading2"]))
         header = ["Halt"] + [f"{offset} m" for offset in BRAKE_OFFSETS] + ["0 m"]
         data = [header]
@@ -2147,6 +2189,7 @@ def _render_pdf_report(
         warn_text_cells = []  # List of (row, col) tuples for red text only
 
         for row_idx, halt in enumerate(filtered_halts, start=1):  # start=1 because row 0 is header
+            halt_list_idx = row_idx - 1  # Convert to 0-based index for zone detection
             row = [halt.get("station") or f"Halt {halt.get('sequence')}"]
             for col_idx, offset in enumerate(BRAKE_OFFSETS, start=1):  # start=1 because col 0 is halt name
                 reading = (halt.get("speeds") or {}).get(str(offset))
@@ -2162,8 +2205,13 @@ def _render_pdf_report(
                             warn_text_cells.append((col_idx, row_idx))  # Red text only
                     elif offset == 20 and speed >= 10:
                         warning_cells.append((col_idx, row_idx))
-                    elif offset == 1000 and speed > 70:
-                        warn_text_cells.append((col_idx, row_idx))
+                    elif offset == 1000:
+                        # Zone-based threshold: 70 for Mumbai suburban, 60 for mainline/Konkan
+                        threshold_1000m = _get_1000m_threshold(
+                            halt_list_idx, boundary_halt_idx, from_station, to_station, direction
+                        )
+                        if speed > threshold_1000m:
+                            warn_text_cells.append((col_idx, row_idx))
                 else:
                     row.append("—")
             row.append("0.0")
@@ -2189,7 +2237,7 @@ def _render_pdf_report(
             table_style.append(("BACKGROUND", (col, row), (col, row), warning_color))
             table_style.append(("TEXTCOLOR", (col, row), (col, row), red_text))
 
-        # Add red text only for moderate warnings (1000m > 70)
+        # Add red text only for moderate warnings (1000m > 70/60 based on zone)
         for col, row in warn_text_cells:
             table_style.append(("TEXTCOLOR", (col, row), (col, row), red_text))
 
@@ -2316,11 +2364,19 @@ def export_pdf(criteria: dict = Body(...)):
 
     brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
     summary = _build_summary_details(filtered, criteria)
+
+    # Compute boundary row index for zone-based 1000m threshold
+    to_station = (criteria.get("to_station_equals") or "").strip().upper()
+    from_station = (criteria.get("from_station_equals") or "").strip().upper()
+    boundary_type = ROUTE_BOUNDARY_MAP.get(to_station) or ROUTE_BOUNDARY_MAP.get(from_station)
+    boundary_stations = ZONE_BOUNDARY_STATIONS.get(boundary_type, []) if boundary_type else []
+    boundary_row_idx = _find_boundary_row_index(filtered, boundary_stations) if boundary_stations else None
+
     try:
         speed_chart = _render_speed_chart_image(chart_payload)
         brake_charts = _render_brake_curve_images(unified_data)  # Returns list of images
         sectional_charts = _generate_sectional_charts(filtered, criteria)  # Generate sectional speed profiles
-        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests, sectional_charts)
+        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests, sectional_charts, boundary_row_idx)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -2894,6 +2950,647 @@ async def update_analysis(analysis_id: int, request: Request, data: Dict[str, An
 
 
 # ------------------------------
+# Dashboard Stats endpoint
+# ------------------------------
+@app.get("/api/rtis-stats")
+async def get_rtis_stats(request: Request):
+    """Get RTIS analysis statistics for dashboard cards"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get yesterday's count
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM div_rtis_analyses
+            WHERE DATE(analysis_date) = CURDATE() - INTERVAL 1 DAY
+        """)
+        yesterday_result = cursor.fetchone()
+        yesterday_count = yesterday_result['count'] if yesterday_result else 0
+
+        # Get total count
+        cursor.execute("SELECT COUNT(*) as count FROM div_rtis_analyses")
+        total_result = cursor.fetchone()
+        total_count = total_result['count'] if total_result else 0
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "yesterday": yesterday_count,
+            "total": total_count
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch stats: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+# ------------------------------
+# RTIS Report Data Endpoints
+# ------------------------------
+@app.get("/api/reports/kpi-stats")
+async def get_kpi_stats(
+    request: Request,
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    designation: str = Query("ALL")
+):
+    """Get KPI statistics for report dashboard"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build date filter
+        date_filter = ""
+        params = []
+        if from_date and to_date:
+            date_filter = "AND a.analysis_date BETWEEN %s AND %s"
+            params = [from_date, to_date]
+
+        # Build designation filter
+        # Default: Show only LPG, LPP, LPM (exclude ALP, Sr.ALP)
+        # Show ALP/Sr.ALP only when explicitly selected
+        designation_filter = ""
+        designation_ids = []
+        if designation != "ALL":
+            # Map designation names to IDs (1=ALP, 2=Sr.ALP, 5=LPG, 6=LPP, 7=LPM)
+            designation_map = {"ALP": 1, "SrALP": 2, "LPG": 5, "LPP": 6, "LPM": 7}
+            if designation in designation_map:
+                designation_ids = [designation_map[designation]]
+                designation_filter = "AND sm.designation_id = %s"
+                params.append(designation_map[designation])
+        else:
+            # Default: only LPG, LPP, LPM (IDs: 5,6,7)
+            designation_filter = "AND sm.designation_id IN (5,6,7)"
+
+        # Total analyses
+        query = f"""
+            SELECT COUNT(DISTINCT a.id) as count
+            FROM div_rtis_analyses a
+            LEFT JOIN div_staff_master sm ON a.lp_hrms_id COLLATE utf8mb4_unicode_ci = sm.hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE 1=1 {date_filter} {designation_filter}
+        """
+        cursor.execute(query, params)
+        total_result = cursor.fetchone()
+        total_count = total_result['count'] if total_result else 0
+
+        # This month analyses
+        month_params = []
+        if designation != "ALL" and designation_ids:
+            month_params = [designation_ids[0]]
+        month_query = f"""
+            SELECT COUNT(DISTINCT a.id) as count
+            FROM div_rtis_analyses a
+            LEFT JOIN div_staff_master sm ON a.lp_hrms_id COLLATE utf8mb4_unicode_ci = sm.hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE MONTH(a.analysis_date) = MONTH(CURDATE())
+              AND YEAR(a.analysis_date) = YEAR(CURDATE())
+              {designation_filter}
+        """
+        cursor.execute(month_query, month_params)
+        month_result = cursor.fetchone()
+        month_count = month_result['count'] if month_result else 0
+
+        # Never analyzed - LPs with no analysis records
+        # Default: Only LPG, LPP, LPM (5,6,7). Show ALP/Sr.ALP only when explicitly selected
+        never_desig_filter = ""
+        never_params = []
+        if designation != "ALL" and designation_ids:
+            # Specific designation selected
+            never_desig_filter = "AND sm.designation_id = %s"
+            never_params = [designation_ids[0]]
+        else:
+            # Default: only LPG, LPP, LPM
+            never_desig_filter = "AND sm.designation_id IN (5,6,7)"
+
+        never_query = f"""
+            SELECT COUNT(DISTINCT sm.hrms_id) as count
+            FROM div_staff_master sm
+            LEFT JOIN div_rtis_analyses a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE sm.current_office_code = 'CSMT-ML'
+              AND sm.status = 'Active'
+              AND a.id IS NULL
+              {never_desig_filter}
+        """
+
+        cursor.execute(never_query, never_params)
+        never_result = cursor.fetchone()
+        never_count = never_result['count'] if never_result else 0
+
+        # Not analyzed in last 15 days
+        # Default: Only LPG, LPP, LPM (5,6,7). Show ALP/Sr.ALP only when explicitly selected
+        not_recent_desig_filter = ""
+        not_recent_params = []
+        if designation != "ALL" and designation_ids:
+            # Specific designation selected
+            not_recent_desig_filter = "AND sm.designation_id = %s"
+            not_recent_params = [designation_ids[0]]
+        else:
+            # Default: only LPG, LPP, LPM
+            not_recent_desig_filter = "AND sm.designation_id IN (5,6,7)"
+
+        not_recent_query = f"""
+            SELECT COUNT(DISTINCT sm.hrms_id) as count
+            FROM div_staff_master sm
+            INNER JOIN (
+                SELECT lp_hrms_id, MAX(analysis_date) as last_analysis
+                FROM div_rtis_analyses
+                GROUP BY lp_hrms_id
+            ) a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE sm.current_office_code = 'CSMT-ML'
+              AND sm.status = 'Active'
+              AND DATEDIFF(CURDATE(), a.last_analysis) > 15
+              {not_recent_desig_filter}
+        """
+
+        cursor.execute(not_recent_query, not_recent_params)
+        not_recent_result = cursor.fetchone()
+        not_recent_count = not_recent_result['count'] if not_recent_result else 0
+
+        # Distinct LP count - LPs who have been analyzed
+        distinct_lp_query = f"""
+            SELECT COUNT(DISTINCT a.lp_hrms_id) as count
+            FROM div_rtis_analyses a
+            LEFT JOIN div_staff_master sm ON a.lp_hrms_id COLLATE utf8mb4_unicode_ci = sm.hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE 1=1 {date_filter} {designation_filter}
+        """
+        cursor.execute(distinct_lp_query, params)
+        distinct_lp_result = cursor.fetchone()
+        distinct_lp_count = distinct_lp_result['count'] if distinct_lp_result else 0
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "total": total_count,
+            "distinct_lps": distinct_lp_count,
+            "this_month": month_count,
+            "never_analyzed": never_count,
+            "not_analyzed_15_days": not_recent_count
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch KPI stats: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/reports/designation-breakdown")
+async def get_designation_breakdown(
+    request: Request,
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    designation: str = Query("ALL")
+):
+    """Get analysis count breakdown by designation"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build date filter
+        filters = []
+        params = []
+        if from_date and to_date:
+            filters.append("a.analysis_date BETWEEN %s AND %s")
+            params.extend([from_date, to_date])
+
+        # Build designation filter.
+        # Default: Show LPG/LPP/LPM unless a specific designation is selected.
+        designation_filter = ""
+        if designation != "ALL":
+            designation_map = {"ALP": 1, "SrALP": 2, "LPG": 5, "LPP": 6, "LPM": 7}
+            if designation in designation_map:
+                designation_filter = "sm.designation_id = %s"
+                params.append(designation_map[designation])
+        else:
+            designation_filter = "sm.designation_id IN (5,6,7)"
+
+        if designation_filter:
+            filters.append(designation_filter)
+
+        where_clause = "AND " + " AND ".join(filters) if filters else ""
+
+        # Default: Only show LPG, LPP, LPM (exclude ALP, Sr.ALP)
+        query = f"""
+            SELECT
+                d.designation_name,
+                COUNT(DISTINCT a.id) as count
+            FROM div_rtis_analyses a
+            INNER JOIN div_staff_master sm ON a.lp_hrms_id COLLATE utf8mb4_unicode_ci = sm.hrms_id COLLATE utf8mb4_unicode_ci
+            INNER JOIN designations d ON sm.designation_id = d.id
+            WHERE sm.current_office_code = 'CSMT-ML'
+              {where_clause}
+            GROUP BY d.designation_name, sm.designation_id
+            ORDER BY count DESC
+        """
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "data": results
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch designation breakdown: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/reports/never-analyzed")
+async def get_never_analyzed_list(
+    request: Request,
+    designation: str = Query("ALL")
+):
+    """Get list of LPs who have never been analyzed"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build designation filter
+        # Default: Show only LPG, LPP, LPM (exclude ALP, Sr.ALP)
+        # Show ALP/Sr.ALP only when explicitly selected
+        designation_filter = ""
+        params = []
+        if designation != "ALL":
+            # Map designation names to IDs (1=ALP, 2=Sr.ALP, 5=LPG, 6=LPP, 7=LPM)
+            designation_map = {"ALP": 1, "SrALP": 2, "LPG": 5, "LPP": 6, "LPM": 7}
+            if designation in designation_map:
+                designation_filter = "AND sm.designation_id = %s"
+                params.append(designation_map[designation])
+        else:
+            # Default: only LPG, LPP, LPM
+            designation_filter = "AND sm.designation_id IN (5,6,7)"
+
+        query = f"""
+            SELECT
+                sm.name as lp_name,
+                sm.hrms_id,
+                d.designation_name
+            FROM div_staff_master sm
+            INNER JOIN designations d ON sm.designation_id = d.id
+            LEFT JOIN div_rtis_analyses a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE sm.current_office_code = 'CSMT-ML'
+              AND sm.status = 'Active'
+              AND a.id IS NULL
+              {designation_filter}
+            ORDER BY d.designation_name, sm.name
+        """
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "data": results
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch never analyzed list: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/reports/not-analyzed-15days")
+async def get_not_analyzed_15days(
+    request: Request,
+    designation: str = Query("ALL")
+):
+    """Get list of LPs not analyzed in last 15 days"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build designation filter
+        # Default: Show only LPG, LPP, LPM (exclude ALP, Sr.ALP)
+        # Show ALP/Sr.ALP only when explicitly selected
+        designation_filter = ""
+        params = []
+        if designation != "ALL":
+            designation_map = {"ALP": 1, "SrALP": 2, "LPG": 5, "LPP": 6, "LPM": 7}
+            if designation in designation_map:
+                designation_filter = "AND sm.designation_id = %s"
+                params.append(designation_map[designation])
+        else:
+            # Default: only LPG, LPP, LPM
+            designation_filter = "AND sm.designation_id IN (5,6,7)"
+
+        query = f"""
+            SELECT
+                sm.hrms_id,
+                sm.name as lp_name,
+                a.last_analysis,
+                DATEDIFF(CURDATE(), a.last_analysis) as days_since,
+                a.last_train,
+                a.last_analyst
+            FROM div_staff_master sm
+            INNER JOIN (
+                SELECT
+                    lp_hrms_id,
+                    MAX(analysis_date) as last_analysis,
+                    (SELECT train_number FROM div_rtis_analyses WHERE lp_hrms_id = a.lp_hrms_id ORDER BY analysis_date DESC LIMIT 1) as last_train,
+                    (SELECT analyst_name FROM div_rtis_analyses WHERE lp_hrms_id = a.lp_hrms_id ORDER BY analysis_date DESC LIMIT 1) as last_analyst
+                FROM div_rtis_analyses a
+                GROUP BY lp_hrms_id
+            ) a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            WHERE sm.current_office_code = 'CSMT-ML'
+              AND sm.status = 'Active'
+              AND DATEDIFF(CURDATE(), a.last_analysis) > 15
+              {designation_filter}
+            ORDER BY days_since DESC
+        """
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "data": results
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch not analyzed in 15 days: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/reports/all-analyses")
+async def get_all_analyses(
+    request: Request,
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    designation: str = Query("ALL"),
+    search: str = Query(""),
+    page: int = Query(1),
+    limit: int = Query(50)
+):
+    """Get all analysis records with pagination and filters"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build filters
+        filters = []
+        params = []
+
+        if from_date and to_date:
+            filters.append("a.analysis_date BETWEEN %s AND %s")
+            params.extend([from_date, to_date])
+
+        # Designation filter
+        # Default: Show only LPG, LPP, LPM (exclude ALP, Sr.ALP)
+        # Show ALP/Sr.ALP only when explicitly selected
+        if designation != "ALL":
+            designation_map = {"ALP": 1, "SrALP": 2, "LPG": 5, "LPP": 6, "LPM": 7}
+            if designation in designation_map:
+                filters.append("sm.designation_id = %s")
+                params.append(designation_map[designation])
+        else:
+            # Default: only LPG, LPP, LPM
+            filters.append("sm.designation_id IN (5,6,7)")
+
+        if search:
+            filters.append("(sm.name LIKE %s OR a.train_number LIKE %s)")
+            search_term = f"%{search}%"
+            params.extend([search_term, search_term])
+
+        where_clause = "WHERE " + " AND ".join(filters) if filters else ""
+
+        # Get total count
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM div_rtis_analyses a
+            LEFT JOIN div_staff_master sm ON a.lp_hrms_id COLLATE utf8mb4_unicode_ci = sm.hrms_id COLLATE utf8mb4_unicode_ci
+            {where_clause}
+        """
+        cursor.execute(count_query, params)
+        total_result = cursor.fetchone()
+        total = total_result['total'] if total_result else 0
+
+        # Get paginated data
+        offset = (page - 1) * limit
+        data_query = f"""
+            SELECT
+                a.id,
+                a.analysis_date,
+                a.lp_hrms_id,
+                sm.name as lp_name,
+                a.train_number,
+                CONCAT(a.from_station, '-', a.to_station) as route,
+                a.analyst_name,
+                a.pdf_filename
+            FROM div_rtis_analyses a
+            LEFT JOIN div_staff_master sm ON a.lp_hrms_id COLLATE utf8mb4_unicode_ci = sm.hrms_id COLLATE utf8mb4_unicode_ci
+            {where_clause}
+            ORDER BY a.analysis_date DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+
+        cursor.execute(data_query, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "data": results,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total + limit - 1) // limit
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch analyses: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/reports/lp-wise-summary")
+async def get_lp_wise_summary(
+    request: Request,
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    designation: str = Query("ALL"),
+    search: str = Query(""),
+    page: int = Query(1),
+    limit: int = Query(50)
+):
+    """Get LP-wise analysis summary with pagination"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build filters for the WHERE clause
+        filters = ["sm.current_office_code = 'CSMT-ML'", "sm.status = 'Active'"]
+        params = []
+
+        # Designation filter
+        # Default: Show only LPG, LPP, LPM (exclude ALP, Sr.ALP)
+        if designation != "ALL":
+            designation_map = {"ALP": 1, "SrALP": 2, "LPG": 5, "LPP": 6, "LPM": 7}
+            if designation in designation_map:
+                filters.append("sm.designation_id = %s")
+                params.append(designation_map[designation])
+        else:
+            # Default: only LPG, LPP, LPM
+            filters.append("sm.designation_id IN (5,6,7)")
+
+        if search:
+            filters.append("sm.name LIKE %s")
+            params.append(f"%{search}%")
+
+        where_clause = "WHERE " + " AND ".join(filters)
+
+        # Build date filter for analysis subquery
+        date_filter = ""
+        date_params = []
+        if from_date and to_date:
+            date_filter = "AND analysis_date BETWEEN %s AND %s"
+            date_params = [from_date, to_date]
+
+        # Get total count of LPs
+        count_query = f"""
+            SELECT COUNT(DISTINCT sm.hrms_id) as total
+            FROM div_staff_master sm
+            INNER JOIN div_rtis_analyses a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            {where_clause}
+        """
+        cursor.execute(count_query, params)
+        total_result = cursor.fetchone()
+        total = total_result['total'] if total_result else 0
+
+        # Get paginated LP data
+        offset = (page - 1) * limit
+        data_query = f"""
+            SELECT
+                sm.hrms_id,
+                sm.name as lp_name,
+                d.designation_name,
+                COUNT(DISTINCT a.id) as total_analyses,
+                MAX(a.analysis_date) as last_analysis_date,
+                (SELECT train_number FROM div_rtis_analyses
+                 WHERE lp_hrms_id = sm.hrms_id COLLATE utf8mb4_unicode_ci
+                 ORDER BY analysis_date DESC LIMIT 1) as last_train
+            FROM div_staff_master sm
+            INNER JOIN designations d ON sm.designation_id = d.id
+            INNER JOIN div_rtis_analyses a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            {where_clause}
+            {"" if not date_filter else "AND a." + date_filter[4:]}
+            GROUP BY sm.hrms_id, sm.name, d.designation_name
+            ORDER BY total_analyses DESC, sm.name ASC
+            LIMIT %s OFFSET %s
+        """
+        all_params = params + date_params + [limit, offset]
+        cursor.execute(data_query, all_params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "data": results,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total + limit - 1) // limit if total > 0 else 0
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch LP-wise summary: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/reports/lp-details/{hrms_id}")
+async def get_lp_details(
+    request: Request,
+    hrms_id: str
+):
+    """Get detailed analysis history for a specific LP"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get LP info
+        lp_query = """
+            SELECT
+                sm.hrms_id,
+                sm.name as lp_name,
+                d.designation_name,
+                sm.current_office_code
+            FROM div_staff_master sm
+            INNER JOIN designations d ON sm.designation_id = d.id
+            WHERE sm.hrms_id = %s
+        """
+        cursor.execute(lp_query, [hrms_id])
+        lp_info = cursor.fetchone()
+
+        if not lp_info:
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": "LP not found", "success": False},
+                status_code=404
+            )
+
+        # Get all analyses for this LP
+        analyses_query = """
+            SELECT
+                a.id,
+                a.analysis_date,
+                a.train_number,
+                CONCAT(a.from_station, '-', a.to_station) as route,
+                a.analyst_name,
+                a.pdf_filename
+            FROM div_rtis_analyses a
+            WHERE a.lp_hrms_id COLLATE utf8mb4_unicode_ci = %s
+            ORDER BY a.analysis_date DESC
+        """
+        cursor.execute(analyses_query, [hrms_id])
+        analyses = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "lp_info": lp_info,
+            "analyses": analyses,
+            "total_analyses": len(analyses)
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch LP details: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+# ------------------------------
 # Debug endpoint
 # ------------------------------
 @app.get("/debug/base_data")
@@ -3297,6 +3994,119 @@ def _build_restriction_segments(labels: list[str], limits: list[float | None]) -
     return segments
 
 
+# Zone boundary stations for braking pattern 1000m threshold
+ZONE_BOUNDARY_STATIONS = {
+    "main_line": ["TLA", "BUD"],  # Thane/Badlapur boundary for main line
+    "konkan": ["DTVL"],  # Dativali boundary for Konkan line
+}
+
+# Mumbai-side terminal stations
+MUMBAI_TERMINALS = {"CSMT", "LTT", "DR", "CSTM"}
+
+# Route end stations and their boundary type
+ROUTE_BOUNDARY_MAP = {
+    # Main line destinations (use TLA/BUD boundary)
+    "PUNE": "main_line", "IGP": "main_line", "MMR": "main_line", "JL": "main_line",
+    "KJT": "main_line", "LNL": "main_line", "PDI": "main_line",
+    # Konkan destinations (use DTVL boundary)
+    "ROHA": "konkan", "RN": "konkan", "CHI": "konkan",
+}
+
+
+def _find_boundary_row_index(df: pl.DataFrame, boundary_stations: list[str]) -> int | None:
+    """
+    Find the first row index where train passes a boundary station.
+    Uses geofence coordinates first, falls back to station code column.
+    """
+    if not boundary_stations:
+        return None
+
+    # Collect geofences for all boundary stations
+    all_geos: list[dict[str, Any]] = []
+    for station in boundary_stations:
+        geos = _geofences_for_station(station, None)
+        all_geos.extend(geos)
+
+    # Try GPS-based detection first
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    if all_geos and lat_col and lon_col:
+        lats = df[lat_col].cast(pl.Float64, strict=False).to_list()
+        lons = df[lon_col].cast(pl.Float64, strict=False).to_list()
+        for idx in range(len(lats)):
+            lat, lon = lats[idx], lons[idx]
+            if lat is None or lon is None:
+                continue
+            inside, _ = _within_geofence(lat, lon, all_geos)
+            if inside:
+                return idx
+
+    # Fallback: station code column
+    station_col = _first_matching_column(df.columns, "STATION", "CODE") or _first_matching_column(df.columns, "STATION")
+    if station_col:
+        boundary_set = {s.upper() for s in boundary_stations}
+        stations = df[station_col].to_list()
+        for idx, station in enumerate(stations):
+            if station and str(station).strip().upper() in boundary_set:
+                return idx
+
+    return None
+
+
+def _find_boundary_halt_index(halts: list[dict[str, Any]], boundary_row_idx: int | None) -> int | None:
+    """
+    Find the halt index corresponding to the boundary row.
+    Returns the last halt before or at the boundary (Zone A side).
+    """
+    if boundary_row_idx is None:
+        return None
+    last_before = None
+    for idx, halt in enumerate(halts):
+        halt_row_idx = halt.get("index", 0)
+        if halt_row_idx >= boundary_row_idx:
+            return last_before if last_before is not None else 0
+        last_before = idx
+    # All halts are before boundary
+    return last_before
+
+
+def _get_1000m_threshold(
+    halt_idx: int,
+    boundary_idx: int | None,
+    from_station: str | None,
+    to_station: str | None,
+    direction: str | None,
+) -> float:
+    """
+    Determine 1000m speed threshold based on halt's zone.
+
+    Zone A (Mumbai suburban side): threshold = 70 km/h
+    Zone B (mainline/Konkan side): threshold = 60 km/h (stricter)
+
+    For DN direction: halts before boundary = Zone A (70), after = Zone B (60)
+    For UP direction: halts before boundary = Zone B (60), after = Zone A (70)
+    """
+    if boundary_idx is None:
+        return 70.0  # Default if no boundary found
+
+    from_norm = (from_station or "").strip().upper()
+    dir_norm = (direction or "").strip().upper()
+
+    # Determine if journey starts from Mumbai side
+    starts_from_mumbai = from_norm in MUMBAI_TERMINALS or dir_norm == "DN"
+
+    if starts_from_mumbai:
+        # DN: Mumbai → destination
+        # Before boundary = Zone A (suburban) = 70
+        # After boundary = Zone B (mainline) = 60
+        return 70.0 if halt_idx <= boundary_idx else 60.0
+    else:
+        # UP: destination → Mumbai
+        # Before boundary = Zone B (mainline) = 60
+        # After boundary = Zone A (suburban) = 70
+        return 60.0 if halt_idx <= boundary_idx else 70.0
+
+
 def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
     if df.is_empty():
         return []
@@ -3359,6 +4169,13 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
             step = dist_steps[idx + 1] if idx + 1 < len(dist_steps) else 0.0
             running_back += step
             dist_to_halt[idx] = running_back
+        sharp_brake = _detect_sharp_brake_point(
+            speeds,
+            dist_to_halt,
+            times,
+            halt_idx,
+        )
+
         halt_entry = {
             "sequence": seq,
             "index": halt_idx,
@@ -3366,6 +4183,7 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
             "logging_time": times[halt_idx],
             "distance_m": halt_dist,
             "speeds": {},
+            "sharp_brake": sharp_brake,
         }
         for offset in offsets:
             target = float(offset)
@@ -3384,6 +4202,144 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
                 "delta_m": diff,
             }
         results.append(halt_entry)
+
+    return results
+
+
+def _halt_deceleration_metrics(
+    halts: list[dict[str, Any]],
+    start_station: str | None = None,
+    end_station: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Prepare deceleration metrics table for the requested halt range.
+
+    Returns list of dicts with:
+    - sequence, station, logging_time
+    - speed_1000_kmph / speed_500_kmph (approach speeds)
+    - decel_full_1000_mps2 / decel_full_500_mps2 (uniform slowdown to 0)
+    - decel_1000_to_500_mps2 (actual rate between the two checkpoints)
+    """
+
+    def _norm_station(value: str | None) -> str:
+        return (value or "").strip().upper()
+
+    def _actual_distance(target: float, sample: dict[str, Any] | None) -> float | None:
+        if not sample:
+            return None
+        delta = sample.get("delta_m")
+        try:
+            actual = float(target) - float(delta or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return actual if actual > 0 else None
+
+    def _uniform_decel(speed_kmph: float | None, distance_m: float | None) -> float | None:
+        if speed_kmph is None or distance_m is None or distance_m <= 0:
+            return None
+        speed_mps = float(speed_kmph) * (1000.0 / 3600.0)
+        return (speed_mps ** 2) / (2.0 * distance_m)
+
+    def _segment_decel(
+        upper_sample: dict[str, Any] | None,
+        lower_sample: dict[str, Any] | None,
+        upper_target: float,
+        lower_target: float,
+    ) -> float | None:
+        if not upper_sample or not lower_sample:
+            return None
+        dist_upper = _actual_distance(upper_target, upper_sample)
+        dist_lower = _actual_distance(lower_target, lower_sample)
+        if dist_upper is None or dist_lower is None:
+            return None
+        delta_d = dist_upper - dist_lower
+        if delta_d <= 0:
+            return None
+        v_upper = upper_sample.get("speed")
+        v_lower = lower_sample.get("speed")
+        if v_upper is None or v_lower is None:
+            return None
+        try:
+            v_upper_mps = float(v_upper) * (1000.0 / 3600.0)
+            v_lower_mps = float(v_lower) * (1000.0 / 3600.0)
+        except (TypeError, ValueError):
+            return None
+        return (v_upper_mps ** 2 - v_lower_mps ** 2) / (2.0 * delta_d)
+
+    start_norm = _norm_station(start_station) if start_station else None
+    end_norm = _norm_station(end_station) if end_station else None
+    inside = start_norm is None
+    start_found = False
+    filtered: list[dict[str, Any]] = []
+    for halt in halts:
+        station = _norm_station(halt.get("station"))
+        if not inside and start_norm and station == start_norm:
+            inside = True
+            start_found = True
+        if inside:
+            filtered.append(halt)
+        if inside and end_norm and station == end_norm:
+            break
+    if start_norm and not start_found and not filtered:
+        # Dataset may already be trimmed to the desired range; include all halts.
+        filtered = list(halts)
+
+    results: list[dict[str, Any]] = []
+    for halt in filtered:
+        speeds = halt.get("speeds", {})
+        sample_1000 = speeds.get("1000")
+        sample_500 = speeds.get("500")
+        sample_250 = speeds.get("250")
+        dist_1000 = _actual_distance(1000.0, sample_1000)
+        dist_500 = _actual_distance(500.0, sample_500)
+        dist_250 = _actual_distance(250.0, sample_250)
+
+        results.append({
+            "sequence": halt.get("sequence"),
+            "station": halt.get("station"),
+            "halt_time": halt.get("logging_time"),
+            "speed_1000_kmph": sample_1000.get("speed") if sample_1000 else None,
+            "speed_500_kmph": sample_500.get("speed") if sample_500 else None,
+            "speed_250_kmph": sample_250.get("speed") if sample_250 else None,
+            "decel_full_1000_mps2": _uniform_decel(
+                sample_1000.get("speed") if sample_1000 else None,
+                dist_1000,
+            ),
+            "decel_full_500_mps2": _uniform_decel(
+                sample_500.get("speed") if sample_500 else None,
+                dist_500,
+            ),
+            "decel_full_250_mps2": _uniform_decel(
+                sample_250.get("speed") if sample_250 else None,
+                dist_250,
+            ),
+            "decel_1000_to_500_mps2": _segment_decel(
+                sample_1000,
+                sample_500,
+                1000.0,
+                500.0,
+            ),
+            "decel_500_to_250_mps2": _segment_decel(
+                sample_500,
+                sample_250,
+                500.0,
+                250.0,
+            ),
+            "decel_1000_to_250_mps2": _segment_decel(
+                sample_1000,
+                sample_250,
+                1000.0,
+                250.0,
+            ),
+            "sharp_brake_speed_kmph": halt.get("sharp_brake", {}).get("speed_kmph") if halt.get("sharp_brake") else None,
+            "sharp_brake_distance_m": halt.get("sharp_brake", {}).get("distance_m") if halt.get("sharp_brake") else None,
+            "sharp_brake_time": halt.get("sharp_brake", {}).get("time") if halt.get("sharp_brake") else None,
+            "decel_sharp_mps2": _uniform_decel(
+                halt.get("sharp_brake", {}).get("speed_kmph") if halt.get("sharp_brake") else None,
+                halt.get("sharp_brake", {}).get("distance_m") if halt.get("sharp_brake") else None,
+            ),
+        })
+
     return results
 
 
@@ -3639,3 +4595,71 @@ if __name__ == "__main__":
     print("[SERVER] Press Ctrl+C to stop")
     print("[SERVER] Open browser: http://localhost:8765/ui/\n")
     uvicorn.run(app, host="0.0.0.0", port=8765)
+def _detect_sharp_brake_point(
+    speeds: list[float],
+    dist_to_halt: list[float],
+    times: list[str | None],
+    halt_idx: int,
+    max_distance_m: float = 1500.0,
+    drop_threshold_kmph: float = 15.0,
+    slope_threshold_mps2: float = 0.15,
+    window: int = 5,
+) -> dict[str, Any] | None:
+    """
+    Scan from ~max_distance_m away toward the halt and find the first block
+    of `window` samples where the speed drops sharply compared to the
+    preceding window. Uses both absolute speed drop and average deceleration.
+    """
+    start_idx = halt_idx
+    for idx in range(halt_idx - 1, -1, -1):
+        if dist_to_halt[idx] > max_distance_m:
+            continue
+        start_idx = idx
+    start_idx = max(start_idx, 0)
+
+    def window_stats(begin: int, end: int) -> dict[str, float]:
+        count = end - begin
+        if count <= 0:
+            return {"avg": 0.0, "min": 0.0, "max": 0.0}
+        values = [float(speeds[i] or 0.0) for i in range(begin, end)]
+        return {
+            "avg": sum(values) / count,
+            "min": min(values),
+            "max": max(values),
+        }
+
+    for idx in range(start_idx + window, halt_idx + 1):
+        baseline_window_start = max(start_idx, idx - window * 2)
+        baseline_window_end = max(start_idx, idx - window)
+        current_window_start = max(start_idx, idx - window)
+        current_window_end = idx
+
+        baseline = window_stats(baseline_window_start, baseline_window_end)
+        current = window_stats(current_window_start, current_window_end)
+
+        baseline_speed = baseline["avg"]
+        current_speed = current["avg"]
+        speed_drop = baseline_speed - current_speed
+
+        if speed_drop < drop_threshold_kmph:
+            continue
+
+        distance_start = dist_to_halt[current_window_start]
+        distance_end = dist_to_halt[current_window_end - 1]
+        distance_delta = max(distance_start - distance_end, 1.0)
+        baseline_mps = baseline_speed * (1000.0 / 3600.0)
+        current_mps = current_speed * (1000.0 / 3600.0)
+        decel = (baseline_mps ** 2 - current_mps ** 2) / (2.0 * distance_delta)
+
+        if decel < slope_threshold_mps2:
+            continue
+
+        idx_pick = current_window_start
+        return {
+            "index": idx_pick,
+            "distance_m": dist_to_halt[idx_pick],
+            "speed_kmph": speeds[idx_pick],
+            "time": times[idx_pick],
+        }
+
+    return None
