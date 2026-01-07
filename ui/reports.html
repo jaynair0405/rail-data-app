@@ -343,8 +343,8 @@
             <i class="fa-solid fa-calendar-check kpi-icon" style="color:var(--success); opacity:0.2;"></i>
         </div>
         <div class="kpi-card red">
-            <div class="kpi-value" id="kpi-never">-</div>
-            <div class="kpi-label">Staff Never Analyzed</div>
+            <div class="kpi-value" id="kpi-3months">-</div>
+            <div class="kpi-label">Not Analyzed > 3 Months</div>
             <i class="fa-solid fa-triangle-exclamation kpi-icon" style="color:var(--danger); opacity:0.2;"></i>
         </div>
         <div class="kpi-card orange">
@@ -402,9 +402,9 @@
             <summary>
                 <div class="summary-content">
                     <i class="fa-solid fa-user-slash" style="color:var(--danger);"></i>
-                    <span>Never Analyzed List</span>
+                    <span>Not Analyzed > 3 Months</span>
                 </div>
-                <span class="badge badge-danger" id="badge-never">0 Records</span>
+                <span class="badge badge-danger" id="badge-3months">0 Records</span>
             </summary>
             <div class="table-wrapper">
                 <table>
@@ -414,10 +414,12 @@
                             <th>LP Name</th>
                             <th>HRMS ID</th>
                             <th>Designation</th>
+                            <th>Last Analyzed</th>
+                            <th>Days Since</th>
                         </tr>
                     </thead>
-                    <tbody id="table-never">
-                        <tr><td colspan="4" style="text-align:center;">Loading...</td></tr>
+                    <tbody id="table-3months">
+                        <tr><td colspan="6" style="text-align:center;">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -538,7 +540,7 @@ function loadAllData() {
     loadKPIStats();
     loadDesignationBreakdown();
     loadLPWiseSummary(1);
-    loadNeverAnalyzed();
+    loadNotAnalyzed3Months();
     loadNotAnalyzed15Days();
     loadAllAnalyses();
 }
@@ -565,7 +567,7 @@ async function loadKPIStats() {
             document.getElementById('kpi-total').textContent = data.total.toLocaleString();
             document.getElementById('kpi-distinct-lps').textContent = data.distinct_lps.toLocaleString();
             document.getElementById('kpi-month').textContent = data.this_month.toLocaleString();
-            document.getElementById('kpi-never').textContent = data.never_analyzed.toLocaleString();
+            document.getElementById('kpi-3months').textContent = data.not_analyzed_3_months.toLocaleString();
             document.getElementById('kpi-15days').textContent = data.not_analyzed_15_days.toLocaleString();
         }
     } catch (error) {
@@ -615,17 +617,17 @@ async function loadDesignationBreakdown() {
     }
 }
 
-// Load Never Analyzed List
-async function loadNeverAnalyzed() {
+// Load Not Analyzed > 3 Months List
+async function loadNotAnalyzed3Months() {
     try {
         const designation = document.getElementById('filter-designation').value;
         const params = new URLSearchParams({ designation });
 
-        const response = await fetch(`${API_BASE}/never-analyzed?${params}`);
+        const response = await fetch(`${API_BASE}/not-analyzed-3months?${params}`);
         const data = await response.json();
 
         if (data.success) {
-            document.getElementById('badge-never').textContent = `${data.data.length} Records`;
+            document.getElementById('badge-3months').textContent = `${data.data.length} Records`;
 
             if (data.data.length > 0) {
                 const html = data.data.map((item, index) => `
@@ -634,16 +636,18 @@ async function loadNeverAnalyzed() {
                         <td><a href="#" class="lp-link" onclick="showLPDetails('${item.hrms_id}'); return false;">${item.lp_name || '-'}</a></td>
                         <td>${item.hrms_id || '-'}</td>
                         <td>${item.designation_name || '-'}</td>
+                        <td>${item.last_analysis ? new Date(item.last_analysis).toLocaleDateString('en-GB') : 'Never'}</td>
+                        <td style="color:var(--danger); font-weight:bold;">${item.days_since ? item.days_since + ' Days' : 'Never'}</td>
                     </tr>
                 `).join('');
-                document.getElementById('table-never').innerHTML = html;
+                document.getElementById('table-3months').innerHTML = html;
             } else {
-                document.getElementById('table-never').innerHTML = '<tr><td colspan="4" style="text-align:center;">No records found</td></tr>';
+                document.getElementById('table-3months').innerHTML = '<tr><td colspan="6" style="text-align:center;">No records found</td></tr>';
             }
         }
     } catch (error) {
-        console.error('Error loading never analyzed:', error);
-        document.getElementById('table-never').innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--danger);">Error loading data</td></tr>';
+        console.error('Error loading not analyzed 3 months:', error);
+        document.getElementById('table-3months').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger);">Error loading data</td></tr>';
     }
 }
 

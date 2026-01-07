@@ -3054,31 +3054,35 @@ async def get_kpi_stats(
         month_result = cursor.fetchone()
         month_count = month_result['count'] if month_result else 0
 
-        # Never analyzed - LPs with no analysis records
+        # Not analyzed in last 3 months (90 days)
         # Default: Only LPG, LPP, LPM (5,6,7). Show ALP/Sr.ALP only when explicitly selected
-        never_desig_filter = ""
-        never_params = []
+        three_month_desig_filter = ""
+        three_month_params = []
         if designation != "ALL" and designation_ids:
             # Specific designation selected
-            never_desig_filter = "AND sm.designation_id = %s"
-            never_params = [designation_ids[0]]
+            three_month_desig_filter = "AND sm.designation_id = %s"
+            three_month_params = [designation_ids[0]]
         else:
             # Default: only LPG, LPP, LPM
-            never_desig_filter = "AND sm.designation_id IN (5,6,7)"
+            three_month_desig_filter = "AND sm.designation_id IN (5,6,7)"
 
-        never_query = f"""
+        three_month_query = f"""
             SELECT COUNT(DISTINCT sm.hrms_id) as count
             FROM div_staff_master sm
-            LEFT JOIN div_rtis_analyses a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            LEFT JOIN (
+                SELECT lp_hrms_id, MAX(analysis_date) as last_analysis
+                FROM div_rtis_analyses
+                GROUP BY lp_hrms_id
+            ) a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
             WHERE sm.current_office_code = 'CSMT-ML'
               AND sm.status = 'Active'
-              AND a.id IS NULL
-              {never_desig_filter}
+              AND (a.lp_hrms_id IS NULL OR DATEDIFF(CURDATE(), a.last_analysis) > 90)
+              {three_month_desig_filter}
         """
 
-        cursor.execute(never_query, never_params)
-        never_result = cursor.fetchone()
-        never_count = never_result['count'] if never_result else 0
+        cursor.execute(three_month_query, three_month_params)
+        three_month_result = cursor.fetchone()
+        three_month_count = three_month_result['count'] if three_month_result else 0
 
         # Not analyzed in last 15 days
         # Default: Only LPG, LPP, LPM (5,6,7). Show ALP/Sr.ALP only when explicitly selected
@@ -3129,7 +3133,7 @@ async def get_kpi_stats(
             "total": total_count,
             "distinct_lps": distinct_lp_count,
             "this_month": month_count,
-            "never_analyzed": never_count,
+            "not_analyzed_3_months": three_month_count,
             "not_analyzed_15_days": not_recent_count
         }
 
@@ -3207,12 +3211,12 @@ async def get_designation_breakdown(
         )
 
 
-@app.get("/api/reports/never-analyzed")
-async def get_never_analyzed_list(
+@app.get("/api/reports/not-analyzed-3months")
+async def get_not_analyzed_3months(
     request: Request,
     designation: str = Query("ALL")
 ):
-    """Get list of LPs who have never been analyzed"""
+    """Get list of LPs not analyzed in last 3 months (90 days)"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -3236,15 +3240,24 @@ async def get_never_analyzed_list(
             SELECT
                 sm.name as lp_name,
                 sm.hrms_id,
-                d.designation_name
+                d.designation_name,
+                a.last_analysis,
+                CASE
+                    WHEN a.last_analysis IS NULL THEN NULL
+                    ELSE DATEDIFF(CURDATE(), a.last_analysis)
+                END as days_since
             FROM div_staff_master sm
             INNER JOIN designations d ON sm.designation_id = d.id
-            LEFT JOIN div_rtis_analyses a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
+            LEFT JOIN (
+                SELECT lp_hrms_id, MAX(analysis_date) as last_analysis
+                FROM div_rtis_analyses
+                GROUP BY lp_hrms_id
+            ) a ON sm.hrms_id COLLATE utf8mb4_unicode_ci = a.lp_hrms_id COLLATE utf8mb4_unicode_ci
             WHERE sm.current_office_code = 'CSMT-ML'
               AND sm.status = 'Active'
-              AND a.id IS NULL
+              AND (a.lp_hrms_id IS NULL OR DATEDIFF(CURDATE(), a.last_analysis) > 90)
               {designation_filter}
-            ORDER BY d.designation_name, sm.name
+            ORDER BY a.last_analysis IS NULL DESC, a.last_analysis ASC, sm.name
         """
 
         cursor.execute(query, params)
@@ -3260,7 +3273,7 @@ async def get_never_analyzed_list(
 
     except Exception as e:
         return JSONResponse(
-            {"error": f"Failed to fetch never analyzed list: {str(e)}", "success": False},
+            {"error": f"Failed to fetch not analyzed 3 months list: {str(e)}", "success": False},
             status_code=500
         )
 
