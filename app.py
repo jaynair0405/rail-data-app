@@ -149,7 +149,7 @@ MPS_CONFIG: dict[str, float] = {
     "TNA-DIVA": 105.0,
     "CSMT-DIVA": 105.0,
     "DIVA-PNVL": 110.0,
-    "PNVL-ROHA": 105.0,
+    "PNVL-ROHA": 110.0,
     "ROHA-CHI": 120.0,
     "CHI-RN": 120.0,
     
@@ -157,7 +157,7 @@ MPS_CONFIG: dict[str, float] = {
     "RN-CHI": 120.0,
     "CHI-ROHA": 120.0,
     
-    "ROHA-PNVL": 105.0,
+    "ROHA-PNVL": 110.0,
     "PNVL-DIVA": 110.0,
     "DIVA-TNA": 105.0,
     "TNA-DR": 105.0,
@@ -995,7 +995,72 @@ def _find_geofence_start_idx(
     if not candidates:
         return None
 
-    print(f"[DEBUG] Found {len(candidates)} candidates at {station_code}, expected_seq={expected_sequence[:5] if expected_sequence else None}, station_data_good={station_data_good}")
+    print(f"[DEBUG] Found {len(candidates)} raw candidates at {station_code}")
+
+    # Sustained departure filter: reject candidates that are just shunting movements
+    # A real departure maintains speed >0 and eventually exits the origin station
+    sustained_candidates = []
+    for candidate_idx in candidates:
+        # Find the index in our arrays (candidate_idx is df row index)
+        arr_idx = None
+        for idx, row_idx in enumerate(idxs):
+            if row_idx == candidate_idx:
+                arr_idx = idx
+                break
+        if arr_idx is None:
+            sustained_candidates.append(candidate_idx)
+            continue
+
+        # Check next 120 seconds of data for sustained departure
+        window_size = min(120, len(idxs) - arr_idx)
+        if window_size < 30:
+            sustained_candidates.append(candidate_idx)
+            continue
+
+        # Look for: (1) sustained speed > 0, (2) exit from origin geofence
+        # Also check that speed actually starts increasing from candidate point (not GPS noise)
+        speed_returned_to_zero = False
+        exited_geofence = False
+        max_speed_in_window = 0
+
+        # Get the initial speed at candidate point - must be real movement, not GPS noise
+        initial_speed = speeds[arr_idx] if arr_idx < len(speeds) and speeds[arr_idx] is not None else 0
+        # Reject candidates with very low initial speed (GPS noise)
+        if initial_speed < 0.5:
+            print(f"[DEBUG] Candidate {candidate_idx}: sustained departure REJECT (GPS_noise, initial_speed={initial_speed})")
+            continue
+
+        for j in range(arr_idx, arr_idx + window_size):
+            sp = speeds[j]
+
+            if sp is not None:
+                max_speed_in_window = max(max_speed_in_window, sp)
+
+                # If speed returns to 0 after going above 3, it's shunting
+                if sp < 0.5 and max_speed_in_window > 3:
+                    speed_returned_to_zero = True
+                    break
+
+            # Check if exited the origin station geofence
+            lat, lon = lats[j], lons[j]
+            if lat is not None and lon is not None:
+                inside, _ = _within_geofence(lat, lon, geos)
+                if not inside:
+                    exited_geofence = True
+                    break
+
+        # Accept if train exited geofence OR maintained speed (didn't return to 0)
+        if exited_geofence:
+            sustained_candidates.append(candidate_idx)
+            print(f"[DEBUG] Candidate {candidate_idx}: sustained departure PASS (exited geofence, initial_speed={initial_speed})")
+        elif not speed_returned_to_zero and max_speed_in_window >= 5:
+            sustained_candidates.append(candidate_idx)
+            print(f"[DEBUG] Candidate {candidate_idx}: sustained departure PASS (maintained speed, max={max_speed_in_window})")
+        else:
+            print(f"[DEBUG] Candidate {candidate_idx}: sustained departure REJECT (shunting, max_speed={max_speed_in_window}, returned_to_zero={speed_returned_to_zero})")
+
+    candidates = sustained_candidates if sustained_candidates else candidates
+    print(f"[DEBUG] After sustained departure filter: {len(candidates)} candidates at {station_code}, expected_seq={expected_sequence[:5] if expected_sequence else None}, station_data_good={station_data_good}")
 
     # Route membership pre-filter: check if next 20 stations are ALL valid for this route
     if station_data_good and to_station and station_col and direction:
@@ -1059,7 +1124,11 @@ def _find_geofence_start_idx(
         else:
             print(f"[DEBUG] No route graph found for {route_key}, skipping membership filter")
 
-    # Validate each candidate
+    # Validate each candidate - collect all valid ones, then return the LAST
+    # (for terminal-starting trains like DR, the actual departure is usually the last one
+    # as earlier candidates may be from different journeys in the same CSV)
+    valid_candidates = []
+
     for candidate_idx in candidates:
         # Primary: Station sequence validation (if data is good)
         if station_data_good and expected_sequence and station_col:
@@ -1075,21 +1144,26 @@ def _find_geofence_start_idx(
             )
             print(f"[DEBUG] Candidate {candidate_idx}: station_sequence_valid={is_valid}")
             if is_valid:
-                return candidate_idx
+                valid_candidates.append(candidate_idx)
         # Fallback: GPS trajectory validation
         elif to_station and lat_col and lon_col:
             is_valid = _validate_gps_trajectory(df, candidate_idx, station_code, to_station, lat_col, lon_col)
             print(f"[DEBUG] Candidate {candidate_idx}: gps_trajectory_valid={is_valid}")
             if is_valid:
-                return candidate_idx
-        # No validation possible, accept first candidate
+                valid_candidates.append(candidate_idx)
+        # No validation possible, add to valid list
         elif not expected_sequence and not to_station:
             print(f"[DEBUG] Candidate {candidate_idx}: no validation possible, accepting")
-            return candidate_idx
+            valid_candidates.append(candidate_idx)
 
-    # If no candidates passed validation, return first (legacy behavior)
-    print(f"[DEBUG] No candidates passed validation, returning first: {candidates[0] if candidates else None}")
-    return candidates[0] if candidates else None
+    # Return the LAST valid candidate (for terminal-starting trains, this is the actual departure)
+    if valid_candidates:
+        print(f"[DEBUG] Found {len(valid_candidates)} valid candidates, returning last: {valid_candidates[-1]}")
+        return valid_candidates[-1]
+
+    # If no candidates passed validation, return last from all candidates
+    print(f"[DEBUG] No candidates passed validation, returning last: {candidates[-1] if candidates else None}")
+    return candidates[-1] if candidates else None
 
 
 def _find_geofence_end_idx(df: pl.DataFrame, station_code: str, direction: str | None, start_after: int | None = None) -> int | None:
