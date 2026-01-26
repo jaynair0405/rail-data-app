@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Violations Analytics</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1300px; margin: 0 auto; }
+
+        /* Header */
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn:hover { opacity: 0.9; }
+
+        /* Filter Section */
+        .filter-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .filter-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .filter-group.wide { flex: 1; min-width: 250px; }
+
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        .filter-group select,
+        .filter-group input {
+            padding: 10px 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+        }
+
+        .filter-group select { cursor: pointer; }
+
+        /* Summary Cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .summary-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .summary-card.highlight { border-left: 4px solid var(--primary); }
+        .summary-value { font-size: 28px; font-weight: 700; color: #0f172a; }
+        .summary-label { font-size: 12px; color: var(--text-light); margin-top: 4px; }
+
+        /* Results Section */
+        .results-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .results-title {
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .results-body { padding: 20px; }
+
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th {
+            text-align: left;
+            padding: 12px 14px;
+            background: #f8fafc;
+            color: var(--text-light);
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+        }
+        td { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #f8fafc; }
+
+        .rank-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 12px;
+        }
+        .rank-1 { background: #fef3c7; color: #d97706; }
+        .rank-2 { background: #e5e7eb; color: #4b5563; }
+        .rank-3 { background: #fed7aa; color: #c2410c; }
+        .rank-default { background: #f1f5f9; color: #64748b; }
+
+        .violation-count {
+            font-weight: 700;
+            color: var(--danger);
+        }
+
+        /* Chart Container */
+        .chart-container {
+            position: relative;
+            height: 350px;
+            margin: 20px 0;
+        }
+
+        /* Loading & Empty States */
+        .loading, .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+            color: var(--text-light);
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 12px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .empty-state i { font-size: 48px; opacity: 0.3; margin-bottom: 12px; }
+
+        /* Hidden filters */
+        .filter-hidden { display: none !important; }
+
+        /* Insight box */
+        .insight-box {
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin-top: 16px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .insight-box i { color: #d97706; margin-top: 2px; }
+        .insight-box p { margin: 0; font-size: 14px; color: #92400e; }
+
+        /* Table wrapper for scrolling */
+        .table-wrapper {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        /* Time period colors */
+        .period-night { color: #6366f1; }
+        .period-morning { color: #f59e0b; }
+        .period-afternoon { color: #10b981; }
+        .period-evening { color: #8b5cf6; }
+
+        @media print {
+            body { background: white; padding: 0; }
+            .filter-section, .page-header .btn { display: none; }
+            .results-section { border: 1px solid #ccc; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <!-- Header -->
+    <div class="page-header">
+        <div class="page-title">
+            <h1><i class="fa-solid fa-chart-pie" style="color: var(--primary);"></i> Violations Analytics</h1>
+            <p>Comprehensive analysis and trends of speed violations</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <a href="/spm/rtis/ui/violations.html" class="btn">
+                <i class="fa-solid fa-list"></i> Daily Report
+            </a>
+            <a href="/spm/rtis/ui/" class="btn">
+                <i class="fa-solid fa-arrow-left"></i> Back to RTIS
+            </a>
+            <button class="btn" onclick="window.print()">
+                <i class="fa-solid fa-print"></i> Print
+            </button>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filter-section">
+        <div class="filter-row">
+            <div class="filter-group wide">
+                <label>Report Type</label>
+                <select id="report-type" onchange="onReportTypeChange()">
+                    <optgroup label="Date-based Reports">
+                        <option value="date-range">Date Range History</option>
+                        <option value="trend">Day-wise Trend</option>
+                        <option value="time-period">Time Period Analysis (Fatigue)</option>
+                    </optgroup>
+                    <optgroup label="Staff Reports">
+                        <option value="staff-history">Staff Violation History</option>
+                        <option value="lp-ranking">LP Ranking (Most Violations)</option>
+                        <option value="alp-ranking">ALP Ranking (Most Violations)</option>
+                        <option value="lp-least">LP Ranking (Least Violations)</option>
+                        <option value="repeat-offenders">Repeat Offenders</option>
+                    </optgroup>
+                    <optgroup label="NCLI Reports">
+                        <option value="ncli-lp">NCLI-LP Ranking</option>
+                        <option value="ncli-alp">NCLI-ALP Ranking</option>
+                    </optgroup>
+                    <optgroup label="Location Reports">
+                        <option value="station-wise">Station-wise Analysis</option>
+                        <option value="route-wise">Route-wise Analysis</option>
+                        <option value="zone-comparison">Zone Comparison</option>
+                    </optgroup>
+                    <optgroup label="Type Analysis">
+                        <option value="type-breakdown">Violation Type Breakdown</option>
+                        <option value="severity">Severity Analysis</option>
+                    </optgroup>
+                </select>
+            </div>
+
+            <div class="filter-group" id="filter-from-date">
+                <label>From Date</label>
+                <input type="date" id="from-date">
+            </div>
+
+            <div class="filter-group" id="filter-to-date">
+                <label>To Date</label>
+                <input type="date" id="to-date">
+            </div>
+
+            <div class="filter-group filter-hidden" id="filter-staff-search">
+                <label>Search Staff (HRMS/Name)</label>
+                <input type="text" id="staff-search" placeholder="Enter HRMS ID or Name">
+            </div>
+
+            <div class="filter-group filter-hidden" id="filter-violation-type">
+                <label>Violation Type</label>
+                <select id="violation-type-filter">
+                    <option value="all">All Types</option>
+                    <option value="1000m_zone_b">1000m Zone B</option>
+                    <option value="500m_zone_a">500m Zone A</option>
+                    <option value="ghat">Ghat Section</option>
+                </select>
+            </div>
+
+            <div class="filter-group filter-hidden" id="filter-min-count">
+                <label>Min Violations</label>
+                <input type="number" id="min-count" value="3" min="1">
+            </div>
+
+            <button class="btn btn-primary" onclick="generateReport()" style="height: 42px;">
+                <i class="fa-solid fa-play"></i> Generate
+            </button>
+        </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-grid" id="summary-cards">
+        <div class="summary-card highlight">
+            <div class="summary-value" id="summary-total">-</div>
+            <div class="summary-label">Total Violations</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-value" id="summary-zone-b">-</div>
+            <div class="summary-label">Zone B (1000m)</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-value" id="summary-zone-a">-</div>
+            <div class="summary-label">Zone A (500m)</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-value" id="summary-ghat">-</div>
+            <div class="summary-label">Ghat Section</div>
+        </div>
+    </div>
+
+    <!-- Results -->
+    <div class="results-section">
+        <div class="results-header">
+            <div class="results-title">
+                <i class="fa-solid fa-table-list"></i>
+                <span id="results-title">Select a report and click Generate</span>
+            </div>
+            <div id="results-actions" style="display: none;">
+                <button class="btn" onclick="exportResults()">
+                    <i class="fa-solid fa-download"></i> Export
+                </button>
+            </div>
+        </div>
+        <div class="results-body" id="results-body">
+            <div class="empty-state">
+                <i class="fa-solid fa-chart-simple"></i>
+                <p>Select a report type and date range, then click Generate</p>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const API_BASE = window.location.origin + '/spm/rtis';
+let currentChart = null;
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Set default dates (last 30 days)
+    const today = new Date();
+    const monthAgo = new Date();
+    monthAgo.setDate(monthAgo.getDate() - 30);
+
+    document.getElementById('to-date').value = today.toISOString().split('T')[0];
+    document.getElementById('from-date').value = monthAgo.toISOString().split('T')[0];
+
+    onReportTypeChange();
+});
+
+// Show/hide filters based on report type
+function onReportTypeChange() {
+    const reportType = document.getElementById('report-type').value;
+
+    // Hide all optional filters first
+    document.getElementById('filter-staff-search').classList.add('filter-hidden');
+    document.getElementById('filter-violation-type').classList.add('filter-hidden');
+    document.getElementById('filter-min-count').classList.add('filter-hidden');
+
+    // Show relevant filters
+    if (reportType === 'staff-history') {
+        document.getElementById('filter-staff-search').classList.remove('filter-hidden');
+    }
+
+    if (['date-range', 'station-wise', 'route-wise'].includes(reportType)) {
+        document.getElementById('filter-violation-type').classList.remove('filter-hidden');
+    }
+
+    if (['repeat-offenders', 'lp-least'].includes(reportType)) {
+        document.getElementById('filter-min-count').classList.remove('filter-hidden');
+    }
+}
+
+// Generate report
+async function generateReport() {
+    const reportType = document.getElementById('report-type').value;
+    const fromDate = document.getElementById('from-date').value;
+    const toDate = document.getElementById('to-date').value;
+
+    if (!fromDate || !toDate) {
+        alert('Please select date range');
+        return;
+    }
+
+    showLoading();
+
+    try {
+        const params = new URLSearchParams({
+            from_date: fromDate,
+            to_date: toDate,
+            report_type: reportType,
+            violation_type: document.getElementById('violation-type-filter').value,
+            staff_search: document.getElementById('staff-search').value,
+            min_count: document.getElementById('min-count').value
+        });
+
+        const response = await fetch(`${API_BASE}/api/violations-analytics?${params}`);
+        const result = await response.json();
+
+        if (result.success) {
+            updateSummaryCards(result.summary);
+            renderReport(reportType, result);
+            document.getElementById('results-actions').style.display = 'block';
+        } else {
+            showError(result.error || 'Failed to load data');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        showError('Failed to connect to server');
+    }
+}
+
+// Update summary cards
+function updateSummaryCards(summary) {
+    document.getElementById('summary-total').textContent = summary.total || 0;
+    document.getElementById('summary-zone-b').textContent = summary.zone_b || 0;
+    document.getElementById('summary-zone-a').textContent = summary.zone_a || 0;
+    document.getElementById('summary-ghat').textContent = summary.ghat || 0;
+}
+
+// Render report based on type
+function renderReport(reportType, result) {
+    const container = document.getElementById('results-body');
+    const titleEl = document.getElementById('results-title');
+
+    // Destroy existing chart
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
+
+    switch (reportType) {
+        case 'date-range':
+            titleEl.textContent = 'Violations in Date Range';
+            renderDateRangeTable(container, result.data);
+            break;
+
+        case 'trend':
+            titleEl.textContent = 'Day-wise Violation Trend';
+            renderTrendChart(container, result.data);
+            break;
+
+        case 'time-period':
+            titleEl.textContent = 'Time Period Analysis (Fatigue Detection)';
+            renderTimePeriodAnalysis(container, result.data);
+            break;
+
+        case 'staff-history':
+            titleEl.textContent = 'Staff Violation History';
+            renderStaffHistory(container, result.data);
+            break;
+
+        case 'lp-ranking':
+            titleEl.textContent = 'LP Ranking - Most Violations';
+            renderRankingTable(container, result.data, 'LP');
+            break;
+
+        case 'alp-ranking':
+            titleEl.textContent = 'ALP Ranking - Most Violations';
+            renderRankingTable(container, result.data, 'ALP');
+            break;
+
+        case 'lp-least':
+            titleEl.textContent = 'LP Ranking - Least Violations';
+            renderRankingTable(container, result.data, 'LP', true);
+            break;
+
+        case 'repeat-offenders':
+            titleEl.textContent = 'Repeat Offenders';
+            renderRepeatOffenders(container, result.data);
+            break;
+
+        case 'ncli-lp':
+            titleEl.textContent = 'NCLI-LP Ranking';
+            renderNCLIRanking(container, result.data, 'LP');
+            break;
+
+        case 'ncli-alp':
+            titleEl.textContent = 'NCLI-ALP Ranking';
+            renderNCLIRanking(container, result.data, 'ALP');
+            break;
+
+        case 'station-wise':
+            titleEl.textContent = 'Station-wise Analysis';
+            renderStationAnalysis(container, result.data);
+            break;
+
+        case 'route-wise':
+            titleEl.textContent = 'Route-wise Analysis';
+            renderRouteAnalysis(container, result.data);
+            break;
+
+        case 'zone-comparison':
+            titleEl.textContent = 'Zone Comparison';
+            renderZoneComparison(container, result.data);
+            break;
+
+        case 'type-breakdown':
+            titleEl.textContent = 'Violation Type Breakdown';
+            renderTypeBreakdown(container, result.data);
+            break;
+
+        case 'severity':
+            titleEl.textContent = 'Severity Analysis';
+            renderSeverityTable(container, result.data);
+            break;
+
+        default:
+            container.innerHTML = '<div class="empty-state"><p>Report type not implemented</p></div>';
+    }
+}
+
+// Render functions for each report type
+
+function renderDateRangeTable(container, data) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><i class="fa-solid fa-check-circle" style="color: var(--success);"></i><p>No violations in selected date range</p></div>';
+        return;
+    }
+
+    let html = `<div class="table-wrapper"><table>
+        <thead><tr>
+            <th>#</th><th>Working Date</th><th>Train</th><th>LP Name</th><th>NCLI</th>
+            <th>Type</th><th>Speed</th><th>Threshold</th><th>Station</th>
+        </tr></thead><tbody>`;
+
+    data.forEach((v, i) => {
+        html += `<tr>
+            <td>${i + 1}</td>
+            <td>${v.working_date || '-'}</td>
+            <td><strong>${v.train_number || '-'}</strong></td>
+            <td>${v.lp_name || '-'}</td>
+            <td>${v.ncli_name || '-'}</td>
+            <td>${formatViolationType(v.violation_type)}</td>
+            <td class="violation-count">${v.speed?.toFixed(1) || '-'}</td>
+            <td>${v.threshold || '-'}</td>
+            <td>${v.halt_station || '-'}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function renderTrendChart(container, data) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    container.innerHTML = '<div class="chart-container"><canvas id="trendChart"></canvas></div>';
+
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.map(d => d.date),
+            datasets: [{
+                label: 'Total Violations',
+                data: data.map(d => d.count),
+                borderColor: '#ef4444',
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                y: { beginAtZero: true }
+            }
+        }
+    });
+}
+
+function renderTimePeriodAnalysis(container, data) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    const periods = {
+        '00:00-06:00': { icon: 'fa-moon', class: 'period-night', label: 'Night (00:00-06:00)' },
+        '06:00-12:00': { icon: 'fa-sun', class: 'period-morning', label: 'Morning (06:00-12:00)' },
+        '12:00-18:00': { icon: 'fa-cloud-sun', class: 'period-afternoon', label: 'Afternoon (12:00-18:00)' },
+        '18:00-24:00': { icon: 'fa-cloud-moon', class: 'period-evening', label: 'Evening (18:00-24:00)' }
+    };
+
+    const total = data.reduce((sum, d) => sum + (d.count || 0), 0);
+    const maxPeriod = data.reduce((max, d) => d.count > max.count ? d : max, { count: 0 });
+
+    let html = `<div class="chart-container"><canvas id="timePeriodChart"></canvas></div>`;
+
+    html += `<table style="margin-top: 20px;">
+        <thead><tr><th>Period</th><th>Violations</th><th>% of Total</th><th>Avg Excess Speed</th></tr></thead><tbody>`;
+
+    data.forEach(d => {
+        const p = periods[d.time_period] || { icon: 'fa-clock', class: '', label: d.time_period };
+        const pct = total > 0 ? ((d.count / total) * 100).toFixed(1) : 0;
+        html += `<tr>
+            <td><i class="fa-solid ${p.icon} ${p.class}"></i> ${p.label}</td>
+            <td class="violation-count">${d.count || 0}</td>
+            <td>${pct}%</td>
+            <td>${d.avg_excess?.toFixed(1) || '-'} km/h</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table>';
+
+    if (maxPeriod.time_period === '00:00-06:00' || maxPeriod.time_period === '18:00-24:00') {
+        html += `<div class="insight-box">
+            <i class="fa-solid fa-lightbulb"></i>
+            <p><strong>Fatigue Indicator:</strong> ${maxPeriod.count} violations (${((maxPeriod.count / total) * 100).toFixed(1)}%) occurred during ${periods[maxPeriod.time_period]?.label || maxPeriod.time_period}. This may indicate fatigue-related issues.</p>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+
+    // Draw chart
+    const ctx = document.getElementById('timePeriodChart').getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: data.map(d => periods[d.time_period]?.label || d.time_period),
+            datasets: [{
+                label: 'Violations',
+                data: data.map(d => d.count),
+                backgroundColor: ['#6366f1', '#f59e0b', '#10b981', '#8b5cf6']
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true } }
+        }
+    });
+}
+
+function renderStaffHistory(container, data) {
+    if (!data || !data.staff) {
+        container.innerHTML = '<div class="empty-state"><p>Staff not found. Enter HRMS ID or name.</p></div>';
+        return;
+    }
+
+    const staff = data.staff;
+    const violations = data.violations || [];
+
+    let html = `<div style="background: #f8fafc; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+        <h3 style="margin: 0 0 8px 0;">${staff.name || 'Unknown'}</h3>
+        <p style="margin: 0; color: var(--text-light);">HRMS: ${staff.hrms_id || '-'} | Designation: ${staff.designation || '-'} | Total Violations: <strong class="violation-count">${violations.length}</strong></p>
+    </div>`;
+
+    if (violations.length === 0) {
+        html += '<div class="empty-state"><i class="fa-solid fa-check-circle" style="color: var(--success);"></i><p>No violations found for this staff member</p></div>';
+    } else {
+        html += `<div class="table-wrapper"><table>
+            <thead><tr><th>#</th><th>Date</th><th>Train</th><th>Type</th><th>Speed</th><th>Station</th></tr></thead><tbody>`;
+        violations.forEach((v, i) => {
+            html += `<tr>
+                <td>${i + 1}</td>
+                <td>${v.working_date || '-'}</td>
+                <td>${v.train_number || '-'}</td>
+                <td>${formatViolationType(v.violation_type)}</td>
+                <td class="violation-count">${v.speed?.toFixed(1) || '-'}</td>
+                <td>${v.halt_station || '-'}</td>
+            </tr>`;
+        });
+        html += '</tbody></table></div>';
+    }
+
+    container.innerHTML = html;
+}
+
+function renderRankingTable(container, data, type, isLeast = false) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    const nameField = type === 'ALP' ? 'alp_name' : 'lp_name';
+    const hrmsField = type === 'ALP' ? 'alp_hrms_id' : 'lp_hrms_id';
+
+    let html = `<div class="table-wrapper"><table>
+        <thead><tr><th>Rank</th><th>${type} Name</th><th>HRMS ID</th><th>NCLI</th><th>Violations</th><th>Avg Excess</th></tr></thead><tbody>`;
+
+    data.forEach((d, i) => {
+        const rank = i + 1;
+        const rankClass = rank <= 3 ? `rank-${rank}` : 'rank-default';
+        html += `<tr>
+            <td><span class="rank-badge ${rankClass}">${rank}</span></td>
+            <td><strong>${d[nameField] || '-'}</strong></td>
+            <td>${d[hrmsField] || '-'}</td>
+            <td>${d.ncli_name || '-'}</td>
+            <td class="violation-count">${d.count || 0}</td>
+            <td>${d.avg_excess?.toFixed(1) || '-'} km/h</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function renderRepeatOffenders(container, data) {
+    renderRankingTable(container, data, 'LP');
+}
+
+function renderNCLIRanking(container, data, type) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    let html = `<div class="table-wrapper"><table>
+        <thead><tr><th>Rank</th><th>NCLI Name</th><th>Staff Count</th><th>Total Violations</th><th>Avg per Staff</th></tr></thead><tbody>`;
+
+    data.forEach((d, i) => {
+        const rank = i + 1;
+        const rankClass = rank <= 3 ? `rank-${rank}` : 'rank-default';
+        const avg = d.staff_count > 0 ? (d.count / d.staff_count).toFixed(1) : 0;
+        html += `<tr>
+            <td><span class="rank-badge ${rankClass}">${rank}</span></td>
+            <td><strong>${d.ncli_name || '-'}</strong></td>
+            <td>${d.staff_count || 0}</td>
+            <td class="violation-count">${d.count || 0}</td>
+            <td>${avg}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function renderStationAnalysis(container, data) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    container.innerHTML = '<div class="chart-container"><canvas id="stationChart"></canvas></div><div id="stationTable"></div>';
+
+    const top10 = data.slice(0, 10);
+
+    const ctx = document.getElementById('stationChart').getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: top10.map(d => d.halt_station),
+            datasets: [{
+                label: 'Violations',
+                data: top10.map(d => d.count),
+                backgroundColor: '#ef4444'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: 'y',
+            plugins: { legend: { display: false } }
+        }
+    });
+
+    let html = `<table style="margin-top: 20px;">
+        <thead><tr><th>Rank</th><th>Station</th><th>Violations</th><th>Zone B</th><th>Zone A</th><th>Ghat</th></tr></thead><tbody>`;
+
+    data.forEach((d, i) => {
+        html += `<tr>
+            <td>${i + 1}</td>
+            <td><strong>${d.halt_station || '-'}</strong></td>
+            <td class="violation-count">${d.count || 0}</td>
+            <td>${d.zone_b || 0}</td>
+            <td>${d.zone_a || 0}</td>
+            <td>${d.ghat || 0}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table>';
+    document.getElementById('stationTable').innerHTML = html;
+}
+
+function renderRouteAnalysis(container, data) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    let html = `<div class="table-wrapper"><table>
+        <thead><tr><th>Rank</th><th>Route (From-To)</th><th>Violations</th><th>Zone B</th><th>Zone A</th><th>Ghat</th></tr></thead><tbody>`;
+
+    data.forEach((d, i) => {
+        html += `<tr>
+            <td>${i + 1}</td>
+            <td><strong>${d.route || '-'}</strong></td>
+            <td class="violation-count">${d.count || 0}</td>
+            <td>${d.zone_b || 0}</td>
+            <td>${d.zone_a || 0}</td>
+            <td>${d.ghat || 0}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function renderZoneComparison(container, data) {
+    if (!data) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    container.innerHTML = '<div class="chart-container"><canvas id="zoneChart"></canvas></div>';
+
+    const ctx = document.getElementById('zoneChart').getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Zone B (1000m)', 'Zone A (500m)', 'Ghat Section'],
+            datasets: [{
+                data: [data.zone_b || 0, data.zone_a || 0, data.ghat || 0],
+                backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
+}
+
+function renderTypeBreakdown(container, data) {
+    renderZoneComparison(container, data);
+}
+
+function renderSeverityTable(container, data) {
+    if (!data || data.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No data available</p></div>';
+        return;
+    }
+
+    let html = `<div class="table-wrapper"><table>
+        <thead><tr><th>#</th><th>Date</th><th>Train</th><th>LP Name</th><th>Speed</th><th>Threshold</th><th>Excess</th><th>Station</th></tr></thead><tbody>`;
+
+    data.forEach((v, i) => {
+        const excess = (v.speed - v.threshold).toFixed(1);
+        html += `<tr>
+            <td>${i + 1}</td>
+            <td>${v.working_date || '-'}</td>
+            <td>${v.train_number || '-'}</td>
+            <td>${v.lp_name || '-'}</td>
+            <td class="violation-count">${v.speed?.toFixed(1) || '-'}</td>
+            <td>${v.threshold || '-'}</td>
+            <td style="font-weight: 700; color: ${parseFloat(excess) > 20 ? '#dc2626' : '#f59e0b'};">+${excess}</td>
+            <td>${v.halt_station || '-'}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+// Utility functions
+function formatViolationType(type) {
+    const map = {
+        '1000m_zone_b': '<span style="color: #3b82f6;">Zone B</span>',
+        '500m_zone_a': '<span style="color: #10b981;">Zone A</span>',
+        'ghat': '<span style="color: #f59e0b;">Ghat</span>'
+    };
+    return map[type] || type;
+}
+
+function showLoading() {
+    document.getElementById('results-body').innerHTML = '<div class="loading"><div class="spinner"></div><span>Loading...</span></div>';
+}
+
+function showError(message) {
+    document.getElementById('results-body').innerHTML = `<div class="empty-state"><i class="fa-solid fa-exclamation-circle" style="color: var(--danger);"></i><p>${message}</p></div>`;
+}
+
+function exportResults() {
+    // TODO: Implement export
+    alert('Export feature coming soon');
+}
+</script>
+
+</body>
+</html>

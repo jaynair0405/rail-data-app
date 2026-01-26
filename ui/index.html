@@ -387,13 +387,24 @@
 <label>NCLI
   <input id="ncliInput" readonly placeholder="Auto from staff master" />
 </label>
-      <label>Analyzed By
+
+<label>ALP
+  <input id="alpInput" list="alpOptions" placeholder="Start typing name" autocomplete="off" />
+  <input type="hidden" id="alpHrmsId" />
+  <input type="hidden" id="alpCliId" />
+</label>
+
+<label>NCLI-ALP
+  <input id="ncliAlpInput" readonly placeholder="Auto from staff master" />
+</label>
+      <label style="max-width: 350px;">Analyzed By
   <input id="analystInput" list="analystOptions" placeholder="Defaults to NCLI (editable)" autocomplete="off" />
   <input type="hidden" id="analystCliId" />
 </label>
   </section>
 
   <datalist id="lpOptions"></datalist>
+  <datalist id="alpOptions"></datalist>
   <datalist id="cliOptions"></datalist>
   <datalist id="analystOptions"></datalist>
 
@@ -404,10 +415,20 @@
       <button id="btnExport" class="secondary">Export PDF</button>
       <button id="btnSaveAnalysis" class="secondary" style="display:none;">💾 Save Analysis</button>
     </div>
-    <div class="actions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
-      <a href="/spm/rtis/ui/reports.html" style="text-decoration: none;">
+    <div class="actions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0; display: flex; gap: 10px; flex-wrap: wrap;">
+      <a href="/spm/rtis/ui/reports.html" style="text-decoration: none; flex: 1; min-width: 150px;">
         <button class="secondary" style="width: 100%;">
-          <i class="fa-solid fa-chart-line"></i> View Analytics & Reports
+          <i class="fa-solid fa-chart-line"></i> LP Reports
+        </button>
+      </a>
+      <a href="/spm/rtis/ui/violations.html" style="text-decoration: none; flex: 1; min-width: 150px;">
+        <button class="secondary" style="width: 100%; background: #fef2f2; border-color: #fecaca; color: #dc2626;">
+          <i class="fa-solid fa-list"></i> Daily Violations
+        </button>
+      </a>
+      <a href="/spm/rtis/ui/violations-analytics.html" style="text-decoration: none; flex: 1; min-width: 150px;">
+        <button class="secondary" style="width: 100%; background: #fef3c7; border-color: #fcd34d; color: #b45309;">
+          <i class="fa-solid fa-chart-pie"></i> Violations Analytics
         </button>
       </a>
     </div>
@@ -465,6 +486,7 @@
           <tr><td colspan="8">Load a run to see braking data.</td></tr>
         </tbody>
       </table>
+      <div id="brakeTableFootnote" style="display:none; font-size:12px; color:#666; margin-top:8px; font-style:italic;"></div>
     </div>
   </section>
 
@@ -537,7 +559,7 @@ let __lastPdfFilename = null;
 let __analysisCompleted = false;
 let __analysisSaved = false;
 
-const BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20];
+const BRAKE_OFFSETS = [1000, 500, 300, 200, 100, 50, 20];
 const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
 
 function getCriteria(){
@@ -554,6 +576,9 @@ function getCriteria(){
     lp_name: document.getElementById("lpInput").value || undefined,
     ncli_name: document.getElementById("ncliInput").value || undefined,
     analyst_name: document.getElementById("analystInput").value || undefined,
+    alp_hrms_id: document.getElementById("alpHrmsId").value || undefined,
+    alp_name: document.getElementById("alpInput").value || undefined,
+    ncli_alp_name: document.getElementById("ncliAlpInput").value || undefined,
     manual_override: window.__manualOverrideApplied || false,
   };
 }
@@ -732,6 +757,94 @@ document.getElementById("analystInput").value = "";
 
   fillSummary();
 }
+
+// ALP search and resolve
+let __alpResolved = null;
+let __alpSearchTimer = null;
+let __alpLabelToHrms = new Map();
+
+const alpInputEl = document.getElementById("alpInput");
+
+function makeAlpLabel(r) {
+  const desig = r.designation_name || "ALP";
+  // ALPs may not have CLI assignment, so show CMS only if available
+  if (r.current_cms_id) {
+    return `${r.name} (${r.hrms_id}) — ${desig} — ${r.current_cms_id}`;
+  }
+  return `${r.name} (${r.hrms_id}) — ${desig}`;
+}
+
+async function refreshAlpDatalist(q) {
+  const url = `${API}/alp-search?q=${encodeURIComponent(q || "")}`;
+  const resp = await fetch(url);
+  const j = await resp.json();
+
+  if (!resp.ok || !j.success) {
+    console.warn("ALP search failed", j);
+    return;
+  }
+
+  const dl = document.getElementById("alpOptions");
+  dl.innerHTML = "";
+  __alpLabelToHrms = new Map();
+
+  (j.data || []).forEach(r => {
+    const label = makeAlpLabel(r);
+    const opt = document.createElement("option");
+    opt.value = label;
+    dl.appendChild(opt);
+    __alpLabelToHrms.set(label, r.hrms_id);
+  });
+}
+
+function setALPResolved(alp) {
+  __alpResolved = alp;
+  document.getElementById("alpHrmsId").value = alp.hrms_id || "";
+  document.getElementById("alpCliId").value = alp.current_cli_id || "";
+  document.getElementById("ncliAlpInput").value = alp.cli_name || "";
+}
+
+function clearALPResolved() {
+  __alpResolved = null;
+  document.getElementById("alpHrmsId").value = "";
+  document.getElementById("alpCliId").value = "";
+  document.getElementById("ncliAlpInput").value = "";
+}
+
+alpInputEl.addEventListener("input", async (e) => {
+  const val = e.target.value || "";
+
+  // Any typing invalidates selection until a valid option is chosen again
+  clearALPResolved();
+
+  // Live search (debounced)
+  clearTimeout(__alpSearchTimer);
+  __alpSearchTimer = setTimeout(() => {
+    if (val.trim().length >= 2) refreshAlpDatalist(val.trim());
+    else refreshAlpDatalist("");
+  }, 250);
+
+  // If user picked an exact datalist option, resolve it
+  const hrms = __alpLabelToHrms.get(val);
+  if (!hrms) return;
+
+  const resp = await fetch(`${API}/alp/${encodeURIComponent(hrms)}`);
+  const j = await resp.json();
+  if (!resp.ok || !j.success) {
+    console.warn(j.error || "ALP resolve failed");
+    return;
+  }
+
+  setALPResolved(j.data);
+  // Show name with CMS ID if available
+  alpInputEl.value = j.data.current_cms_id
+    ? `${j.data.name} (${j.data.current_cms_id})`
+    : j.data.name;
+});
+
+// Initialize ALP datalist on page load
+refreshAlpDatalist("");
+
 function makeCliLabel(c) {
   const cms = c.cmsid ? c.cmsid : "CMS?";
   return `${c.cli_name} — ${cms}`;
@@ -810,7 +923,8 @@ function renderBrakingTable(halts) {
   }
 
   const rowsHtml = halts.map(halt => {
-    const info = `<strong>${halt.station || "Halt"}</strong><br/><small>${halt.logging_time || ""}</small>`;
+    const ghatMarker = halt.in_ghat_section ? " ▲" : "";
+    const info = `<strong>${halt.station || "Halt"}${ghatMarker}</strong><br/><small>${halt.logging_time || ""}</small>`;
     let rowClass = "";
     const cells = BRAKE_OFFSETS.map(offset => {
       const key = String(offset);
@@ -819,7 +933,13 @@ function renderBrakingTable(halts) {
       let warnClass = "";
       const numeric = reading && typeof reading.speed === "number" ? reading.speed : null;
       if (numeric !== null) {
-        if (offset === 1000 && numeric > 70) warnClass = "warn";
+        // Use zone-based threshold from API (70 for Mumbai suburban, 60/90 for mainline/Konkan)
+        const threshold1000m = halt.threshold_1000m || 70;
+        if (offset === 1000 && numeric > threshold1000m) warnClass = "warn";
+        // 500m threshold only applies in Zone A (suburban); null in Zone B
+        if (offset === 500 && halt.threshold_500m != null && numeric > halt.threshold_500m) {
+          warnClass = "warn";
+        }
         if (offset === 100) {
           if (numeric > 20) {
             warnClass = "warn-cell-critical";
@@ -836,6 +956,18 @@ function renderBrakingTable(halts) {
     return `<tr class="${rowClass}"><td>${info}</td>${cells}</tr>`;
   }).join("");
   tbody.innerHTML = rowsHtml;
+
+  // Show footnote if any halts are in ghat section
+  const footnote = document.getElementById("brakeTableFootnote");
+  if (footnote) {
+    const hasGhatSection = halts.some(h => h.in_ghat_section);
+    if (hasGhatSection) {
+      footnote.textContent = "▲ Ghat section (steep gradient descent) — 40 km/h limit at 1000m";
+      footnote.style.display = "block";
+    } else {
+      footnote.style.display = "none";
+    }
+  }
 }
 
 function renderBrakingChart(halts) {

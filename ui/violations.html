@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Speed Violations Report</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn-danger { background: var(--danger); color: white; border-color: var(--danger); }
+        .btn:hover { opacity: 0.9; }
+
+        /* Date Filter */
+        .filter-bar {
+            display: flex;
+            gap: 16px;
+            align-items: flex-end;
+            background: var(--surface);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        .filter-group input, .filter-group select {
+            padding: 8px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        /* Toggle Switch */
+        .toggle-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toggle-label {
+            font-size: 13px;
+            color: var(--text-light);
+            cursor: pointer;
+        }
+
+        .toggle-label.active {
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            background: #cbd5e1;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .toggle-switch.active {
+            background: var(--primary);
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            border-radius: 50%;
+            transition: transform 0.3s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
+
+        .toggle-switch.active::after {
+            transform: translateX(20px);
+        }
+
+        /* Summary Cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .summary-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            position: relative;
+        }
+
+        .summary-card.zone-b { border-left: 4px solid #3b82f6; }
+        .summary-card.zone-a { border-left: 4px solid #10b981; }
+        .summary-card.ghat { border-left: 4px solid #f59e0b; }
+        .summary-card.total { border-left: 4px solid #ef4444; }
+
+        .summary-value { font-size: 36px; font-weight: 700; color: #0f172a; }
+        .summary-label { font-size: 13px; color: var(--text-light); margin-top: 4px; }
+        .summary-sublabel { font-size: 11px; color: var(--text-light); margin-top: 2px; }
+
+        /* Section Cards */
+        .section-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .section-badge {
+            padding: 4px 10px;
+            border-radius: 99px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .badge-blue { background: #eff6ff; color: #3b82f6; }
+        .badge-green { background: #ecfdf5; color: #10b981; }
+        .badge-orange { background: #fffbeb; color: #f59e0b; }
+
+        .section-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .icon-blue { background: #eff6ff; color: #3b82f6; }
+        .icon-green { background: #ecfdf5; color: #10b981; }
+        .icon-orange { background: #fffbeb; color: #f59e0b; }
+
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            background: #f8fafc;
+            color: var(--text-light);
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+        }
+        td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #f8fafc; }
+
+        .speed-cell {
+            font-weight: 700;
+            color: var(--danger);
+        }
+
+        .threshold-cell {
+            font-size: 11px;
+            color: var(--text-light);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-light);
+        }
+
+        .empty-state i {
+            font-size: 48px;
+            opacity: 0.3;
+            margin-bottom: 12px;
+        }
+
+        /* Loading spinner */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            color: var(--text-light);
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 12px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Print styles */
+        @media print {
+            body { background: white; padding: 0; }
+            .filter-bar, .page-header .btn { display: none; }
+            .section-card { break-inside: avoid; border: 1px solid #ccc; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <!-- Back Button & Header -->
+    <div class="page-header">
+        <div class="page-title">
+            <h1><i class="fa-solid fa-triangle-exclamation" style="color: var(--danger);"></i> Daily Speed Violations Report</h1>
+            <p>Speed threshold violations detected during RTIS analysis</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <a href="/spm/rtis/ui/" class="btn">
+                <i class="fa-solid fa-arrow-left"></i> Back to RTIS
+            </a>
+            <a href="/spm/rtis/ui/violations-analytics.html" class="btn">
+                <i class="fa-solid fa-chart-pie"></i> Analytics
+            </a>
+            <button class="btn" onclick="window.print()">
+                <i class="fa-solid fa-print"></i> Print
+            </button>
+            <button class="btn btn-primary" onclick="exportPDF()">
+                <i class="fa-solid fa-download"></i> Export PDF
+            </button>
+        </div>
+    </div>
+
+    <!-- Date Filter -->
+    <div class="filter-bar">
+        <div class="filter-group">
+            <label>Select Date</label>
+            <input type="date" id="filter-date" onchange="loadViolations()">
+        </div>
+        <div class="filter-group">
+            <label>Date Type</label>
+            <div class="toggle-group">
+                <span class="toggle-label active" id="label-analysis">Analysis Date</span>
+                <div class="toggle-switch" id="date-type-toggle" onclick="toggleDateType()"></div>
+                <span class="toggle-label" id="label-working">Working Date</span>
+            </div>
+        </div>
+        <button class="btn btn-primary" onclick="loadViolations()">
+            <i class="fa-solid fa-search"></i> Load Report
+        </button>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-grid">
+        <div class="summary-card zone-b">
+            <div class="summary-value" id="count-zone-b">-</div>
+            <div class="summary-label">1000m Zone B Violations</div>
+            <div class="summary-sublabel">Mainline (60/90 km/h threshold)</div>
+        </div>
+        <div class="summary-card zone-a">
+            <div class="summary-value" id="count-zone-a">-</div>
+            <div class="summary-label">500m Zone A Violations</div>
+            <div class="summary-sublabel">Suburban (30/40 km/h threshold)</div>
+        </div>
+        <div class="summary-card ghat">
+            <div class="summary-value" id="count-ghat">-</div>
+            <div class="summary-label">Ghat Section Violations</div>
+            <div class="summary-sublabel">Steep gradient (40 km/h threshold)</div>
+        </div>
+        <div class="summary-card total">
+            <div class="summary-value" id="count-total">-</div>
+            <div class="summary-label">Total Violations</div>
+            <div class="summary-sublabel">All categories combined</div>
+        </div>
+    </div>
+
+    <!-- Section 1: 1000m Zone B Violations -->
+    <div class="section-card">
+        <div class="section-header">
+            <div class="section-title">
+                <div class="section-icon icon-blue"><i class="fa-solid fa-gauge-high"></i></div>
+                <span>Speed at 1000m - Zone B (Mainline/Konkan)</span>
+            </div>
+            <span class="section-badge badge-blue" id="badge-zone-b">0 violations</span>
+        </div>
+        <div id="table-zone-b">
+            <div class="empty-state">
+                <i class="fa-solid fa-calendar-day"></i>
+                <p>Select a date to view violations</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section 2: 500m Zone A Violations -->
+    <div class="section-card">
+        <div class="section-header">
+            <div class="section-title">
+                <div class="section-icon icon-green"><i class="fa-solid fa-city"></i></div>
+                <span>Speed at 500m - Zone A (Suburban)</span>
+            </div>
+            <span class="section-badge badge-green" id="badge-zone-a">0 violations</span>
+        </div>
+        <div id="table-zone-a">
+            <div class="empty-state">
+                <i class="fa-solid fa-calendar-day"></i>
+                <p>Select a date to view violations</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section 3: Ghat Section Violations -->
+    <div class="section-card">
+        <div class="section-header">
+            <div class="section-title">
+                <div class="section-icon icon-orange"><i class="fa-solid fa-mountain"></i></div>
+                <span>Ghat Section Violations (Steep Gradient Descent)</span>
+            </div>
+            <span class="section-badge badge-orange" id="badge-ghat">0 violations</span>
+        </div>
+        <div id="table-ghat">
+            <div class="empty-state">
+                <i class="fa-solid fa-calendar-day"></i>
+                <p>Select a date to view violations</p>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const API_BASE = window.location.origin + '/spm/rtis';
+let dateType = 'analysis'; // Default to analysis date
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Set default date to today
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('filter-date').value = today;
+    loadViolations();
+});
+
+// Toggle date type
+function toggleDateType() {
+    const toggle = document.getElementById('date-type-toggle');
+    const labelAnalysis = document.getElementById('label-analysis');
+    const labelWorking = document.getElementById('label-working');
+
+    if (dateType === 'analysis') {
+        dateType = 'working';
+        toggle.classList.add('active');
+        labelAnalysis.classList.remove('active');
+        labelWorking.classList.add('active');
+    } else {
+        dateType = 'analysis';
+        toggle.classList.remove('active');
+        labelAnalysis.classList.add('active');
+        labelWorking.classList.remove('active');
+    }
+    loadViolations();
+}
+
+// Load violations for selected date
+async function loadViolations() {
+    const date = document.getElementById('filter-date').value;
+    if (!date) {
+        alert('Please select a date');
+        return;
+    }
+
+    // Show loading state
+    showLoading('table-zone-b');
+    showLoading('table-zone-a');
+    showLoading('table-ghat');
+
+    try {
+        const response = await fetch(`${API_BASE}/api/daily-violations?date=${date}&date_type=${dateType}`);
+        const result = await response.json();
+
+        if (result.success) {
+            const data = result.data;
+            const counts = result.counts;
+
+            // Update summary cards
+            document.getElementById('count-zone-b').textContent = counts['1000m_zone_b'];
+            document.getElementById('count-zone-a').textContent = counts['500m_zone_a'];
+            document.getElementById('count-ghat').textContent = counts['ghat'];
+            document.getElementById('count-total').textContent = counts['total'];
+
+            // Update badges
+            document.getElementById('badge-zone-b').textContent = `${counts['1000m_zone_b']} violation${counts['1000m_zone_b'] !== 1 ? 's' : ''}`;
+            document.getElementById('badge-zone-a').textContent = `${counts['500m_zone_a']} violation${counts['500m_zone_a'] !== 1 ? 's' : ''}`;
+            document.getElementById('badge-ghat').textContent = `${counts['ghat']} violation${counts['ghat'] !== 1 ? 's' : ''}`;
+
+            // Render tables
+            renderViolationTable('table-zone-b', data['1000m_zone_b'], '1000m', '60/90');
+            renderViolationTable('table-zone-a', data['500m_zone_a'], '500m', '30/40');
+            renderViolationTable('table-ghat', data['ghat'], '1000m', '40');
+
+        } else {
+            alert('Error loading violations: ' + (result.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Failed to load violations. Please try again.');
+    }
+}
+
+// Show loading spinner
+function showLoading(containerId) {
+    document.getElementById(containerId).innerHTML = `
+        <div class="loading">
+            <div class="spinner"></div>
+            <span>Loading...</span>
+        </div>
+    `;
+}
+
+// Render violation table
+function renderViolationTable(containerId, violations, distance, threshold) {
+    const container = document.getElementById(containerId);
+
+    if (!violations || violations.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fa-solid fa-check-circle" style="color: var(--success);"></i>
+                <p>No violations recorded for this date</p>
+            </div>
+        `;
+        return;
+    }
+
+    let html = `
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Working Date</th>
+                    <th>Train No</th>
+                    <th>Loco</th>
+                    <th>LP Name</th>
+                    <th>NCLI</th>
+                    <th>ALP Name</th>
+                    <th>NCLI-ALP</th>
+                    <th>Speed @ ${distance}</th>
+                    <th>Halt Station</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    violations.forEach((v, idx) => {
+        html += `
+            <tr>
+                <td>${idx + 1}</td>
+                <td>${v.working_date || '-'}</td>
+                <td><strong>${v.train_number || '-'}</strong></td>
+                <td>${v.loco_number || '-'}</td>
+                <td>${v.lp_name || '-'}</td>
+                <td>${v.ncli_name || '-'}</td>
+                <td>${v.alp_name || '-'}</td>
+                <td>${v.ncli_alp_name || '-'}</td>
+                <td>
+                    <span class="speed-cell">${v.speed ? v.speed.toFixed(1) : '-'} km/h</span>
+                    <div class="threshold-cell">Threshold: ${v.threshold || threshold} km/h</div>
+                </td>
+                <td>${v.halt_station || '-'}</td>
+            </tr>
+        `;
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+// Export to PDF
+function exportPDF() {
+    const date = document.getElementById('filter-date').value;
+    if (!date) {
+        alert('Please select a date first');
+        return;
+    }
+
+    // Open PDF in new tab
+    window.open(`${API_BASE}/api/violations-export?date=${date}&date_type=${dateType}`, '_blank');
+}
+</script>
+
+</body>
+</html>

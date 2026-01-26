@@ -86,7 +86,7 @@ STATION_SEQUENCE_LOOKAHEAD_ROWS = 1500
 STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
-BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20]
+BRAKE_OFFSETS = [1000, 500, 300, 200, 100, 50, 20]
 BRAKE_EVENT_TOLERANCE = 0.3
 BRAKE_REQUIRED_DROP = 45.0
 BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
@@ -1710,6 +1710,30 @@ def braking_profile(criteria: dict = Body(...)):
             entry_speeds = entry.get("speeds", {})
             for key in extras_to_strip:
                 entry_speeds.pop(key, None)
+
+    # Compute zone-based 1000m threshold for each halt (sync with PDF export logic)
+    from_station = (criteria.get("from_station_equals") or "").strip().upper()
+    to_station = (criteria.get("to_station_equals") or "").strip().upper()
+    direction = (criteria.get("direction_equals") or "").strip().upper()
+    boundary_type = ROUTE_BOUNDARY_MAP.get(to_station) or ROUTE_BOUNDARY_MAP.get(from_station)
+    boundary_stations = ZONE_BOUNDARY_STATIONS.get(boundary_type, []) if boundary_type else []
+    boundary_row_idx = _find_boundary_row_index(filtered, boundary_stations) if boundary_stations else None
+    boundary_halt_idx = _find_boundary_halt_index(halts, boundary_row_idx)
+
+    # Compute which halts are in ghat sections (steep gradient, UP direction only)
+    ghat_halt_indices = _compute_ghat_section_halts(filtered, halts, direction)
+
+    train_number = (criteria.get("train_number") or "").strip()
+    for idx, halt in enumerate(halts):
+        in_ghat = idx in ghat_halt_indices
+        halt["threshold_1000m"] = _get_1000m_threshold(
+            idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
+        )
+        halt["threshold_500m"] = _get_500m_threshold(
+            idx, boundary_halt_idx, from_station, direction, train_number
+        )
+        halt["in_ghat_section"] = in_ghat  # Include for UI debugging/display
+
     return {
         "offsets": BRAKE_OFFSETS,
         "halts": halts,
@@ -2151,6 +2175,7 @@ def _render_pdf_report(
     brake_tests: dict[str, Any],
     sectional_charts: list[io.BytesIO] | None = None,
     boundary_row_idx: int | None = None,
+    ghat_halt_indices: set[int] | None = None,
 ) -> io.BytesIO:
     if SimpleDocTemplate is None:
         raise RuntimeError("reportlab is required for PDF export. Please install it.")
@@ -2232,17 +2257,19 @@ def _render_pdf_report(
 
     if halts:
         # Deduplicate halts occurring at the same station within 600 meters
+        # Track original index for ghat section lookup
         filtered_halts = []
-        seen_distances: dict[str, float] = {}
+        original_indices = []  # Maps filtered index -> original index in halts
         last_station = None
         last_distance = None
-        for halt in halts:
+        for orig_idx, halt in enumerate(halts):
             station = (halt.get("station") or "").strip().upper()
             distance = float(halt.get("distance_m") or 0.0)
             if station and station == last_station and last_distance is not None:
                 if abs(distance - last_distance) < 600.0:
                     continue  # Skip very close halts in same station
             filtered_halts.append(halt)
+            original_indices.append(orig_idx)
             last_station = station
             last_distance = distance
 
@@ -2250,6 +2277,7 @@ def _render_pdf_report(
         from_station = summary.get("from_station")
         to_station = summary.get("to_station")
         direction = summary.get("direction")
+        train_number = summary.get("train_number")
 
         # Find boundary halt index using the pre-computed boundary row index
         boundary_halt_idx = _find_boundary_halt_index(filtered_halts, boundary_row_idx)
@@ -2262,9 +2290,18 @@ def _render_pdf_report(
         warning_cells = []  # List of (row, col) tuples for red background
         warn_text_cells = []  # List of (row, col) tuples for red text only
 
+        has_ghat_section = False  # Track if any halt is in ghat section for footnote
         for row_idx, halt in enumerate(filtered_halts, start=1):  # start=1 because row 0 is header
             halt_list_idx = row_idx - 1  # Convert to 0-based index for zone detection
-            row = [halt.get("station") or f"Halt {halt.get('sequence')}"]
+            orig_halt_idx = original_indices[halt_list_idx]  # Original index for ghat section lookup
+            in_ghat = ghat_halt_indices is not None and orig_halt_idx in ghat_halt_indices
+            if in_ghat:
+                has_ghat_section = True
+            # Add ▲ marker for ghat section stations
+            station_name = halt.get("station") or f"Halt {halt.get('sequence')}"
+            if in_ghat:
+                station_name = f"{station_name} ▲"
+            row = [station_name]
             for col_idx, offset in enumerate(BRAKE_OFFSETS, start=1):  # start=1 because col 0 is halt name
                 reading = (halt.get("speeds") or {}).get(str(offset))
                 if reading and isinstance(reading.get("speed"), (int, float)):
@@ -2280,11 +2317,18 @@ def _render_pdf_report(
                     elif offset == 20 and speed >= 10:
                         warning_cells.append((col_idx, row_idx))
                     elif offset == 1000:
-                        # Zone-based threshold: 70 for Mumbai suburban, 60 for mainline/Konkan
+                        # Zone-based threshold: 70 for suburban, 60/90 for mainline, 40 for ghat section
                         threshold_1000m = _get_1000m_threshold(
-                            halt_list_idx, boundary_halt_idx, from_station, to_station, direction
+                            halt_list_idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
                         )
                         if speed > threshold_1000m:
+                            warn_text_cells.append((col_idx, row_idx))
+                    elif offset == 500:
+                        # 500m threshold only applies in Zone A (suburban)
+                        threshold_500m = _get_500m_threshold(
+                            halt_list_idx, boundary_halt_idx, from_station, direction, train_number
+                        )
+                        if threshold_500m is not None and speed > threshold_500m:
                             warn_text_cells.append((col_idx, row_idx))
                 else:
                     row.append("—")
@@ -2317,6 +2361,15 @@ def _render_pdf_report(
 
         brake_table.setStyle(TableStyle(table_style))
         story.append(brake_table)
+
+        # Add footnote if any halt is in ghat section
+        if has_ghat_section:
+            footnote_style = styles["Normal"].clone("footnote")
+            footnote_style.fontSize = 8
+            footnote_style.textColor = colors.Color(0.4, 0.4, 0.4)
+            footnote_style.fontName = "Helvetica-Oblique"
+            story.append(Paragraph("▲ Ghat section (steep gradient descent) — 40 km/h limit at 1000m", footnote_style))
+
         story.append(Spacer(1, 16))
 
     if brake_tests:
@@ -2442,15 +2495,19 @@ def export_pdf(criteria: dict = Body(...)):
     # Compute boundary row index for zone-based 1000m threshold
     to_station = (criteria.get("to_station_equals") or "").strip().upper()
     from_station = (criteria.get("from_station_equals") or "").strip().upper()
+    direction = (criteria.get("direction_equals") or "").strip().upper()
     boundary_type = ROUTE_BOUNDARY_MAP.get(to_station) or ROUTE_BOUNDARY_MAP.get(from_station)
     boundary_stations = ZONE_BOUNDARY_STATIONS.get(boundary_type, []) if boundary_type else []
     boundary_row_idx = _find_boundary_row_index(filtered, boundary_stations) if boundary_stations else None
+
+    # Compute ghat section halts for steep gradient threshold
+    ghat_halt_indices = _compute_ghat_section_halts(filtered, unified_data, direction)
 
     try:
         speed_chart = _render_speed_chart_image(chart_payload)
         brake_charts = _render_brake_curve_images(unified_data)  # Returns list of images
         sectional_charts = _generate_sectional_charts(filtered, criteria)  # Generate sectional speed profiles
-        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests, sectional_charts, boundary_row_idx)
+        pdf_buffer = _render_pdf_report(summary, speed_chart, brake_charts, unified_data, brake_tests, sectional_charts, boundary_row_idx, ghat_halt_indices)
     except RuntimeError as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -2814,10 +2871,11 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Prepare SQL insert
+        # Prepare SQL insert (includes ALP fields)
         sql = """
             INSERT INTO div_rtis_analyses (
                 user_id, lp_hrms_id, lp_name, ncli_id, ncli_name,
+                alp_hrms_id, alp_name, ncli_alp_name,
                 analyst_id, analyst_name, analysis_date, working_date,
                 train_number, from_station, to_station, direction, route,
                 loco_number, coach_type, load_type, brake_position,
@@ -2826,6 +2884,7 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                 halt_count, braking_events_count, notes, metadata
             ) VALUES (
                 %s, %s, %s, %s, %s,
+                %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
@@ -2843,6 +2902,9 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
             criteria.get("lp_name"),
             criteria.get("cli_id"),  # ncli_id
             criteria.get("ncli_name"),
+            criteria.get("alp_hrms_id"),
+            criteria.get("alp_name"),
+            criteria.get("ncli_alp_name"),
             criteria.get("analyst_cli_id"),  # analyst_id
             criteria.get("analyst_name"),
             datetime.now().date(),  # analysis_date
@@ -2876,13 +2938,63 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         # Get the inserted ID
         analysis_id = cursor.lastrowid
 
+        # Detect and save violations if DF is loaded
+        violations_saved = 0
+        if DF is not None and not DF.is_empty():
+            try:
+                # Compute braking profile
+                filtered = apply_criteria(DF, criteria)
+                if filtered.height > 0:
+                    halts = _braking_profile(filtered, BRAKE_OFFSETS)
+                    violations = _detect_violations(filtered, halts, criteria)
+
+                    # Save violations to database
+                    if violations:
+                        # Get working_date from CSV data
+                        working_date = _first_datetime(filtered)
+                        working_date_str = working_date.date() if isinstance(working_date, datetime) else None
+
+                        violation_sql = """
+                            INSERT INTO div_rtis_violations (
+                                analysis_id, working_date, train_number, loco_number,
+                                lp_name, lp_hrms_id, ncli_name,
+                                alp_name, alp_hrms_id, ncli_alp_name,
+                                violation_type, speed, threshold, halt_station, zone
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+
+                        for v in violations:
+                            cursor.execute(violation_sql, (
+                                analysis_id,
+                                working_date_str,
+                                criteria.get("train_number"),
+                                criteria.get("loco_number"),
+                                criteria.get("lp_name"),
+                                criteria.get("lp_hrms_id"),
+                                criteria.get("ncli_name"),
+                                criteria.get("alp_name"),
+                                criteria.get("alp_hrms_id"),
+                                criteria.get("ncli_alp_name"),
+                                v["violation_type"],
+                                v["speed"],
+                                v["threshold"],
+                                v["halt_station"],
+                                v["zone"],
+                            ))
+                            violations_saved += 1
+
+                        conn.commit()
+            except Exception as ve:
+                print(f"[WARN] Failed to save violations: {ve}")
+
         cursor.close()
         conn.close()
 
         return {
             "success": True,
             "message": "Analysis saved successfully",
-            "analysis_id": analysis_id
+            "analysis_id": analysis_id,
+            "violations_saved": violations_saved
         }
 
     except Exception as e:
@@ -3021,6 +3133,598 @@ async def update_analysis(analysis_id: int, request: Request, data: Dict[str, An
             {"error": f"Failed to update analysis: {str(e)}", "success": False},
             status_code=500
         )
+
+
+# ------------------------------
+# ALP Search & Resolve endpoints
+# ------------------------------
+@app.get("/alp-search")
+async def alp_search(q: str = Query(default="")):
+    """Search ALP/Sr.ALP staff by name (designation_id IN (1, 2))"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        search_term = f"%{q.strip()}%" if q.strip() else "%"
+
+        query = """
+            SELECT
+                s.hrms_id,
+                s.name,
+                s.current_cms_id,
+                s.current_cli_id,
+                c.cli_name,
+                d.designation_name
+            FROM div_staff_master s
+            LEFT JOIN div_cli_master c ON s.current_cli_id = c.cli_id
+            LEFT JOIN designations d ON s.designation_id = d.id
+            WHERE s.designation_id IN (1, 2)
+              AND s.status = 'Active'
+              AND s.current_office_code = 'CSMT-ML'
+              AND s.name LIKE %s
+            ORDER BY s.name
+            LIMIT 50
+        """
+
+        cursor.execute(query, (search_term,))
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "data": results}
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/alp/{hrms_id}")
+async def get_alp_by_hrms(hrms_id: str):
+    """Get ALP details by HRMS ID including CLI info"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        query = """
+            SELECT
+                s.hrms_id,
+                s.name,
+                s.current_cms_id,
+                s.current_cli_id,
+                c.cli_name,
+                d.designation_name
+            FROM div_staff_master s
+            LEFT JOIN div_cli_master c ON s.current_cli_id = c.cli_id
+            LEFT JOIN designations d ON s.designation_id = d.id
+            WHERE s.hrms_id = %s
+              AND s.designation_id IN (1, 2)
+            LIMIT 1
+        """
+
+        cursor.execute(query, (hrms_id,))
+        result = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not result:
+            return JSONResponse({"success": False, "error": "ALP not found"}, status_code=404)
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ------------------------------
+# Daily Violations Report API
+# ------------------------------
+@app.get("/api/daily-violations")
+async def get_daily_violations(
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    date_type: str = Query(default="analysis", description="Date type: analysis (created_at) or working (working_date)"),
+    violation_type: str = Query(default="all", description="Type: all, 1000m_zone_b, 500m_zone_a, ghat")
+):
+    """
+    Get daily violations report for a specific date.
+
+    Args:
+        date: Date in YYYY-MM-DD format
+        date_type: 'analysis' (default) filters by created_at, 'working' filters by working_date
+        violation_type: Filter by violation type
+
+    Returns violations grouped by type:
+    - 1000m_zone_b: Zone B (mainline) violations at 1000m (>60 or >90 for 222xx)
+    - 500m_zone_a: Zone A (suburban) violations at 500m (>30 or >40 for 222xx)
+    - ghat: Ghat section violations at 1000m (>40, UP direction only)
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        # Build query based on date type and violation type filter
+        date_column = "created_at" if date_type == "analysis" else "working_date"
+        type_filter = ""
+        params = [date]
+
+        if violation_type != "all":
+            type_filter = "AND violation_type = %s"
+            params.append(violation_type)
+
+        query = f"""
+            SELECT
+                id,
+                analysis_id,
+                working_date,
+                train_number,
+                loco_number,
+                lp_name,
+                lp_hrms_id,
+                ncli_name,
+                alp_name,
+                alp_hrms_id,
+                ncli_alp_name,
+                violation_type,
+                speed,
+                threshold,
+                halt_station,
+                zone,
+                created_at
+            FROM div_rtis_violations
+            WHERE DATE({date_column}) = %s
+            {type_filter}
+            ORDER BY violation_type, train_number, halt_station
+        """
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        # Group by violation type for easier UI rendering
+        grouped = {
+            "1000m_zone_b": [],
+            "500m_zone_a": [],
+            "ghat": []
+        }
+
+        for row in results:
+            vtype = row.get("violation_type")
+            if vtype in grouped:
+                # Convert date objects to strings for JSON serialization
+                if row.get("working_date"):
+                    row["working_date"] = row["working_date"].strftime("%d.%m.%Y") if hasattr(row["working_date"], "strftime") else str(row["working_date"])
+                if row.get("created_at"):
+                    row["created_at"] = row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
+                grouped[vtype].append(row)
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "date": date,
+            "data": grouped,
+            "counts": {
+                "1000m_zone_b": len(grouped["1000m_zone_b"]),
+                "500m_zone_a": len(grouped["500m_zone_a"]),
+                "ghat": len(grouped["ghat"]),
+                "total": len(results)
+            }
+        }
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/violations-export")
+async def export_violations_pdf(
+    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    date_type: str = Query(default="analysis", description="Date type: analysis (created_at) or working (working_date)"),
+    violation_type: str = Query(default="all", description="Type: all, 1000m_zone_b, 500m_zone_a, ghat")
+):
+    """Export daily violations report as PDF"""
+    if SimpleDocTemplate is None:
+        return JSONResponse({"error": "PDF export requires reportlab"}, status_code=500)
+
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        # Build query based on date type and violation type filter
+        date_column = "created_at" if date_type == "analysis" else "working_date"
+        type_filter = ""
+        params = [date]
+
+        if violation_type != "all":
+            type_filter = "AND violation_type = %s"
+            params.append(violation_type)
+
+        query = f"""
+            SELECT * FROM div_rtis_violations
+            WHERE DATE({date_column}) = %s
+            {type_filter}
+            ORDER BY violation_type, train_number
+        """
+
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Group by violation type
+        grouped = {"1000m_zone_b": [], "500m_zone_a": [], "ghat": []}
+        for row in results:
+            vtype = row.get("violation_type")
+            if vtype in grouped:
+                grouped[vtype].append(row)
+
+        # Generate PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=36, bottomMargin=36, leftMargin=36, rightMargin=36)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Title
+        story.append(Paragraph(f"Daily Speed Violations Report - {date}", styles["Title"]))
+        story.append(Spacer(1, 12))
+
+        # Define table headers and section titles
+        section_info = {
+            "1000m_zone_b": ("Speed Violations at 1000m (Zone B - Mainline)", "60/90 km/h threshold"),
+            "500m_zone_a": ("Speed Violations at 500m (Zone A - Suburban)", "30/40 km/h threshold"),
+            "ghat": ("Ghat Section Violations (Steep Gradient)", "40 km/h threshold"),
+        }
+
+        headers = ["SR", "DATE", "TR NO", "LOCO", "LP NAME", "NCLI", "ALP NAME", "NCLI-ALP", "SPEED", "HALT"]
+
+        for vtype, (title, subtitle) in section_info.items():
+            violations = grouped.get(vtype, [])
+
+            story.append(Paragraph(title, styles["Heading2"]))
+            story.append(Paragraph(f"<i>{subtitle}</i>", styles["Normal"]))
+            story.append(Spacer(1, 6))
+
+            if not violations:
+                story.append(Paragraph("<i>No violations recorded</i>", styles["Normal"]))
+            else:
+                data = [headers]
+                for idx, v in enumerate(violations, 1):
+                    wd = v.get("working_date")
+                    if hasattr(wd, "strftime"):
+                        wd = wd.strftime("%d.%m.%Y")
+                    data.append([
+                        str(idx),
+                        str(wd or ""),
+                        str(v.get("train_number") or ""),
+                        str(v.get("loco_number") or ""),
+                        str(v.get("lp_name") or ""),
+                        str(v.get("ncli_name") or ""),
+                        str(v.get("alp_name") or ""),
+                        str(v.get("ncli_alp_name") or ""),
+                        f"{v.get('speed', 0):.1f}",
+                        str(v.get("halt_station") or ""),
+                    ])
+
+                table = Table(data, colWidths=[25, 55, 40, 40, 75, 65, 75, 65, 40, 45])
+                table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.4, 0.6)),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                    ("ALIGN", (8, 0), (8, -1), "CENTER"),
+                ]))
+                story.append(table)
+
+            story.append(Spacer(1, 16))
+
+        doc.build(story)
+        buffer.seek(0)
+
+        filename = f"violations_{date}.pdf"
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ------------------------------
+# Violations Analytics API
+# ------------------------------
+@app.get("/api/violations-analytics")
+async def get_violations_analytics(
+    from_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    to_date: str = Query(..., description="End date YYYY-MM-DD"),
+    report_type: str = Query(..., description="Report type"),
+    violation_type: str = Query(default="all"),
+    staff_search: str = Query(default=""),
+    min_count: int = Query(default=3)
+):
+    """
+    Comprehensive violations analytics API supporting multiple report types.
+    """
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        # Get summary counts first
+        summary_query = """
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN violation_type = '1000m_zone_b' THEN 1 ELSE 0 END) as zone_b,
+                SUM(CASE WHEN violation_type = '500m_zone_a' THEN 1 ELSE 0 END) as zone_a,
+                SUM(CASE WHEN violation_type = 'ghat' THEN 1 ELSE 0 END) as ghat
+            FROM div_rtis_violations
+            WHERE DATE(working_date) BETWEEN %s AND %s
+        """
+        cursor.execute(summary_query, (from_date, to_date))
+        summary = cursor.fetchone() or {"total": 0, "zone_b": 0, "zone_a": 0, "ghat": 0}
+
+        data = None
+
+        # Build type filter
+        type_filter = ""
+        if violation_type != "all":
+            type_filter = f"AND violation_type = '{violation_type}'"
+
+        # Handle different report types
+        if report_type == "date-range":
+            query = f"""
+                SELECT id, working_date, train_number, lp_name, lp_hrms_id, ncli_name,
+                       violation_type, speed, threshold, halt_station
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s {type_filter}
+                ORDER BY working_date DESC, train_number
+            """
+            cursor.execute(query, (from_date, to_date))
+            results = cursor.fetchall()
+            data = []
+            for r in results:
+                if r.get("working_date") and hasattr(r["working_date"], "strftime"):
+                    r["working_date"] = r["working_date"].strftime("%d.%m.%Y")
+                data.append(r)
+
+        elif report_type == "trend":
+            query = """
+                SELECT DATE(working_date) as date, COUNT(*) as count
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                GROUP BY DATE(working_date)
+                ORDER BY date
+            """
+            cursor.execute(query, (from_date, to_date))
+            results = cursor.fetchall()
+            data = [{"date": r["date"].strftime("%d/%m") if hasattr(r["date"], "strftime") else str(r["date"]), "count": r["count"]} for r in results]
+
+        elif report_type == "time-period":
+            query = """
+                SELECT
+                    CASE
+                        WHEN HOUR(working_date) BETWEEN 0 AND 5 THEN '00:00-06:00'
+                        WHEN HOUR(working_date) BETWEEN 6 AND 11 THEN '06:00-12:00'
+                        WHEN HOUR(working_date) BETWEEN 12 AND 17 THEN '12:00-18:00'
+                        ELSE '18:00-24:00'
+                    END AS time_period,
+                    COUNT(*) AS count,
+                    AVG(speed - threshold) AS avg_excess
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                GROUP BY time_period
+                ORDER BY FIELD(time_period, '00:00-06:00', '06:00-12:00', '12:00-18:00', '18:00-24:00')
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type == "staff-history":
+            if not staff_search:
+                data = {"staff": None, "violations": []}
+            else:
+                # Find staff
+                staff_query = """
+                    SELECT DISTINCT lp_name as name, lp_hrms_id as hrms_id, ncli_name as designation
+                    FROM div_rtis_violations
+                    WHERE (lp_hrms_id LIKE %s OR lp_name LIKE %s)
+                    LIMIT 1
+                """
+                search_term = f"%{staff_search}%"
+                cursor.execute(staff_query, (search_term, search_term))
+                staff = cursor.fetchone()
+
+                if staff:
+                    violations_query = """
+                        SELECT working_date, train_number, violation_type, speed, threshold, halt_station
+                        FROM div_rtis_violations
+                        WHERE lp_hrms_id = %s OR lp_name LIKE %s
+                        ORDER BY working_date DESC
+                    """
+                    cursor.execute(violations_query, (staff.get("hrms_id"), f"%{staff_search}%"))
+                    violations = cursor.fetchall()
+                    for v in violations:
+                        if v.get("working_date") and hasattr(v["working_date"], "strftime"):
+                            v["working_date"] = v["working_date"].strftime("%d.%m.%Y")
+                    data = {"staff": staff, "violations": violations}
+                else:
+                    data = {"staff": None, "violations": []}
+
+        elif report_type == "lp-ranking":
+            query = """
+                SELECT lp_name, lp_hrms_id, ncli_name, COUNT(*) as count,
+                       AVG(speed - threshold) as avg_excess
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND lp_name IS NOT NULL AND lp_name != ''
+                GROUP BY lp_hrms_id, lp_name, ncli_name
+                ORDER BY count DESC
+                LIMIT 50
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type == "alp-ranking":
+            query = """
+                SELECT alp_name, alp_hrms_id, ncli_alp_name as ncli_name, COUNT(*) as count,
+                       AVG(speed - threshold) as avg_excess
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND alp_name IS NOT NULL AND alp_name != ''
+                GROUP BY alp_hrms_id, alp_name, ncli_alp_name
+                ORDER BY count DESC
+                LIMIT 50
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type == "lp-least":
+            query = """
+                SELECT lp_name, lp_hrms_id, ncli_name, COUNT(*) as count,
+                       AVG(speed - threshold) as avg_excess
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND lp_name IS NOT NULL AND lp_name != ''
+                GROUP BY lp_hrms_id, lp_name, ncli_name
+                HAVING count >= %s
+                ORDER BY count ASC
+                LIMIT 50
+            """
+            cursor.execute(query, (from_date, to_date, min_count))
+            data = cursor.fetchall()
+
+        elif report_type == "repeat-offenders":
+            query = """
+                SELECT lp_name, lp_hrms_id, ncli_name, COUNT(*) as count,
+                       COUNT(DISTINCT DATE(working_date)) as days_with_violations,
+                       AVG(speed - threshold) as avg_excess
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND lp_name IS NOT NULL AND lp_name != ''
+                GROUP BY lp_hrms_id, lp_name, ncli_name
+                HAVING count >= %s
+                ORDER BY count DESC
+                LIMIT 50
+            """
+            cursor.execute(query, (from_date, to_date, min_count))
+            data = cursor.fetchall()
+
+        elif report_type == "ncli-lp":
+            query = """
+                SELECT ncli_name, COUNT(*) as count,
+                       COUNT(DISTINCT lp_hrms_id) as staff_count
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND ncli_name IS NOT NULL AND ncli_name != ''
+                GROUP BY ncli_name
+                ORDER BY count DESC
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type == "ncli-alp":
+            query = """
+                SELECT ncli_alp_name as ncli_name, COUNT(*) as count,
+                       COUNT(DISTINCT alp_hrms_id) as staff_count
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND ncli_alp_name IS NOT NULL AND ncli_alp_name != ''
+                GROUP BY ncli_alp_name
+                ORDER BY count DESC
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type == "station-wise":
+            query = f"""
+                SELECT halt_station, COUNT(*) as count,
+                       SUM(CASE WHEN violation_type = '1000m_zone_b' THEN 1 ELSE 0 END) as zone_b,
+                       SUM(CASE WHEN violation_type = '500m_zone_a' THEN 1 ELSE 0 END) as zone_a,
+                       SUM(CASE WHEN violation_type = 'ghat' THEN 1 ELSE 0 END) as ghat
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s {type_filter}
+                  AND halt_station IS NOT NULL AND halt_station != ''
+                GROUP BY halt_station
+                ORDER BY count DESC
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type == "route-wise":
+            # We need to get route info from the analyses table via analysis_id
+            query = f"""
+                SELECT CONCAT(a.from_station, ' - ', a.to_station) as route,
+                       COUNT(*) as count,
+                       SUM(CASE WHEN v.violation_type = '1000m_zone_b' THEN 1 ELSE 0 END) as zone_b,
+                       SUM(CASE WHEN v.violation_type = '500m_zone_a' THEN 1 ELSE 0 END) as zone_a,
+                       SUM(CASE WHEN v.violation_type = 'ghat' THEN 1 ELSE 0 END) as ghat
+                FROM div_rtis_violations v
+                LEFT JOIN div_rtis_analyses a ON v.analysis_id = a.id
+                WHERE DATE(v.working_date) BETWEEN %s AND %s {type_filter}
+                GROUP BY a.from_station, a.to_station
+                ORDER BY count DESC
+            """
+            cursor.execute(query, (from_date, to_date))
+            data = cursor.fetchall()
+
+        elif report_type in ["zone-comparison", "type-breakdown"]:
+            data = {
+                "zone_b": summary.get("zone_b") or 0,
+                "zone_a": summary.get("zone_a") or 0,
+                "ghat": summary.get("ghat") or 0
+            }
+
+        elif report_type == "severity":
+            query = """
+                SELECT working_date, train_number, lp_name, speed, threshold, halt_station
+                FROM div_rtis_violations
+                WHERE DATE(working_date) BETWEEN %s AND %s
+                ORDER BY (speed - threshold) DESC
+                LIMIT 100
+            """
+            cursor.execute(query, (from_date, to_date))
+            results = cursor.fetchall()
+            data = []
+            for r in results:
+                if r.get("working_date") and hasattr(r["working_date"], "strftime"):
+                    r["working_date"] = r["working_date"].strftime("%d.%m.%Y")
+                data.append(r)
+
+        else:
+            data = []
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "report_type": report_type,
+            "from_date": from_date,
+            "to_date": to_date,
+            "summary": summary,
+            "data": data
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
 # ------------------------------
@@ -4099,6 +4803,173 @@ ROUTE_BOUNDARY_MAP = {
     "ROHA": "konkan", "RN": "konkan", "CHI": "konkan",
 }
 
+# Ghat sections - steep gradient descent in UP direction
+# Format: (start_station, end_station) - halts between these get 40 km/h at 1000m
+GHAT_SECTIONS = [
+    ("IGP", "KSRA"),  # Bhor Ghat section on IGP-Mumbai route
+    ("LNL", "PDI"),   # Bhor Ghat section on Pune-Mumbai route
+]
+
+
+def _find_station_row_index(df: pl.DataFrame, station_code: str) -> int | None:
+    """Find the first row index where train passes a specific station using geofence."""
+    geos = _geofences_for_station(station_code, None)
+    if not geos:
+        return None
+
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    if not lat_col or not lon_col:
+        return None
+
+    lats = df[lat_col].cast(pl.Float64, strict=False).to_list()
+    lons = df[lon_col].cast(pl.Float64, strict=False).to_list()
+
+    for idx in range(len(lats)):
+        lat, lon = lats[idx], lons[idx]
+        if lat is None or lon is None:
+            continue
+        inside, _ = _within_geofence(lat, lon, geos)
+        if inside:
+            return idx
+    return None
+
+
+def _compute_ghat_section_halts(
+    df: pl.DataFrame,
+    halts: list[dict[str, Any]],
+    direction: str | None,
+) -> set[int]:
+    """
+    Determine which halt indices are in ghat sections (steep gradient).
+    Only applies to UP direction (descending towards Mumbai).
+    Returns a set of halt indices that are in ghat sections.
+    """
+    dir_norm = (direction or "").strip().upper()
+    if dir_norm != "UP":
+        return set()  # Ghat threshold only applies in UP direction
+
+    ghat_halt_indices: set[int] = set()
+
+    for start_station, end_station in GHAT_SECTIONS:
+        start_row = _find_station_row_index(df, start_station)
+        end_row = _find_station_row_index(df, end_station)
+
+        if start_row is None or end_row is None:
+            continue
+
+        # Ensure start_row < end_row for range checking
+        min_row, max_row = min(start_row, end_row), max(start_row, end_row)
+
+        # Find halts that are between these row indices
+        for idx, halt in enumerate(halts):
+            halt_row = halt.get("index", 0)
+            if min_row <= halt_row <= max_row:
+                ghat_halt_indices.add(idx)
+
+    return ghat_halt_indices
+
+
+def _detect_violations(
+    df: pl.DataFrame,
+    halts: list[dict[str, Any]],
+    criteria: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Detect speed violations from braking profile data.
+
+    Returns list of violations with type, speed, threshold, and halt info.
+
+    Violation types:
+    - '1000m_zone_b': Zone B (mainline) violations at 1000m (>60 or >90 for 222xx)
+    - '500m_zone_a': Zone A (suburban) violations at 500m (>30 or >40 for 222xx)
+    - 'ghat': Ghat section violations at 1000m (>40, UP direction only)
+    """
+    if not halts:
+        return []
+
+    violations = []
+
+    from_station = (criteria.get("from_station_equals") or "").strip().upper()
+    to_station = (criteria.get("to_station_equals") or "").strip().upper()
+    direction = (criteria.get("direction_equals") or "").strip().upper()
+    train_number = (criteria.get("train_number") or "").strip()
+
+    # Compute boundary info
+    boundary_type = ROUTE_BOUNDARY_MAP.get(to_station) or ROUTE_BOUNDARY_MAP.get(from_station)
+    boundary_stations = ZONE_BOUNDARY_STATIONS.get(boundary_type, []) if boundary_type else []
+    boundary_row_idx = _find_boundary_row_index(df, boundary_stations) if boundary_stations else None
+    boundary_halt_idx = _find_boundary_halt_index(halts, boundary_row_idx)
+
+    # Compute ghat section halts
+    ghat_halt_indices = _compute_ghat_section_halts(df, halts, direction)
+
+    # Zone B threshold: 90 for trains starting with "222", else 60
+    zone_b_threshold = 90.0 if train_number.startswith("222") else 60.0
+
+    # Zone A 500m threshold: 40 for trains starting with "222", else 30
+    zone_a_500m_threshold = 40.0 if train_number.startswith("222") else 30.0
+
+    # Ghat threshold: always 40
+    ghat_threshold = 40.0
+
+    # Determine if journey starts from Mumbai side
+    starts_from_mumbai = from_station in MUMBAI_TERMINALS or direction == "DN"
+
+    for idx, halt in enumerate(halts):
+        halt_station = halt.get("station") or f"Halt {halt.get('sequence')}"
+        speeds = halt.get("speeds") or {}
+
+        # Determine zone for this halt
+        in_zone_a = True  # Default
+        if boundary_halt_idx is not None:
+            if starts_from_mumbai:
+                in_zone_a = idx <= boundary_halt_idx
+            else:
+                in_zone_a = idx > boundary_halt_idx
+
+        in_ghat = idx in ghat_halt_indices
+
+        # Check 1000m speed
+        reading_1000 = speeds.get("1000")
+        if reading_1000 and isinstance(reading_1000.get("speed"), (int, float)):
+            speed_1000 = reading_1000["speed"]
+
+            # Ghat violation (takes precedence, only UP direction)
+            if in_ghat and speed_1000 > ghat_threshold:
+                violations.append({
+                    "violation_type": "ghat",
+                    "speed": speed_1000,
+                    "threshold": ghat_threshold,
+                    "halt_station": halt_station,
+                    "zone": "ghat",
+                })
+            # Zone B violation (only if not in ghat and in zone B)
+            elif not in_zone_a and not in_ghat and speed_1000 > zone_b_threshold:
+                violations.append({
+                    "violation_type": "1000m_zone_b",
+                    "speed": speed_1000,
+                    "threshold": zone_b_threshold,
+                    "halt_station": halt_station,
+                    "zone": "mainline",
+                })
+
+        # Check 500m speed (Zone A only)
+        reading_500 = speeds.get("500")
+        if reading_500 and isinstance(reading_500.get("speed"), (int, float)):
+            speed_500 = reading_500["speed"]
+
+            if in_zone_a and speed_500 > zone_a_500m_threshold:
+                violations.append({
+                    "violation_type": "500m_zone_a",
+                    "speed": speed_500,
+                    "threshold": zone_a_500m_threshold,
+                    "halt_station": halt_station,
+                    "zone": "suburban",
+                })
+
+    return violations
+
 
 def _find_boundary_row_index(df: pl.DataFrame, boundary_stations: list[str]) -> int | None:
     """
@@ -4163,21 +5034,33 @@ def _get_1000m_threshold(
     from_station: str | None,
     to_station: str | None,
     direction: str | None,
+    train_number: str | None = None,
+    in_ghat_section: bool = False,
 ) -> float:
     """
     Determine 1000m speed threshold based on halt's zone.
 
     Zone A (Mumbai suburban side): threshold = 70 km/h
     Zone B (mainline/Konkan side): threshold = 60 km/h (stricter)
+        - Exception: trains starting with "222" use 90 km/h for Zone B
+        - Exception: ghat sections in UP direction use 40 km/h
 
-    For DN direction: halts before boundary = Zone A (70), after = Zone B (60)
-    For UP direction: halts before boundary = Zone B (60), after = Zone A (70)
+    For DN direction: halts before boundary = Zone A (70), after = Zone B (60/90)
+    For UP direction: halts before boundary = Zone B (60/90 or 40 for ghat), after = Zone A (70)
     """
+    # Ghat section override: 40 km/h for steep gradient descent (UP direction only)
+    if in_ghat_section:
+        return 40.0
+
     if boundary_idx is None:
         return 70.0  # Default if no boundary found
 
     from_norm = (from_station or "").strip().upper()
     dir_norm = (direction or "").strip().upper()
+    train_num = (train_number or "").strip()
+
+    # Zone B threshold: 90 for trains starting with "222", else 60
+    zone_b_threshold = 90.0 if train_num.startswith("222") else 60.0
 
     # Determine if journey starts from Mumbai side
     starts_from_mumbai = from_norm in MUMBAI_TERMINALS or dir_norm == "DN"
@@ -4185,13 +5068,57 @@ def _get_1000m_threshold(
     if starts_from_mumbai:
         # DN: Mumbai → destination
         # Before boundary = Zone A (suburban) = 70
-        # After boundary = Zone B (mainline) = 60
-        return 70.0 if halt_idx <= boundary_idx else 60.0
+        # After boundary = Zone B (mainline) = 60 or 90
+        return 70.0 if halt_idx <= boundary_idx else zone_b_threshold
     else:
         # UP: destination → Mumbai
-        # Before boundary = Zone B (mainline) = 60
+        # Before boundary = Zone B (mainline) = 60 or 90
         # After boundary = Zone A (suburban) = 70
-        return 60.0 if halt_idx <= boundary_idx else 70.0
+        return zone_b_threshold if halt_idx <= boundary_idx else 70.0
+
+
+def _get_500m_threshold(
+    halt_idx: int,
+    boundary_idx: int | None,
+    from_station: str | None,
+    direction: str | None,
+    train_number: str | None = None,
+) -> float | None:
+    """
+    Determine 500m speed threshold based on halt's zone.
+
+    Only Zone A (Mumbai suburban side) has a 500m threshold:
+        - Trains starting with "222": 40 km/h
+        - Other trains: 30 km/h
+
+    Zone B (mainline/Konkan): No 500m threshold (returns None)
+
+    For DN direction: halts before boundary = Zone A (threshold), after = Zone B (None)
+    For UP direction: halts before boundary = Zone B (None), after = Zone A (threshold)
+    """
+    if boundary_idx is None:
+        return None  # Default: no 500m threshold if no boundary found
+
+    from_norm = (from_station or "").strip().upper()
+    dir_norm = (direction or "").strip().upper()
+    train_num = (train_number or "").strip()
+
+    # Zone A threshold: 40 for trains starting with "222", else 30
+    zone_a_threshold = 40.0 if train_num.startswith("222") else 30.0
+
+    # Determine if journey starts from Mumbai side
+    starts_from_mumbai = from_norm in MUMBAI_TERMINALS or dir_norm == "DN"
+
+    if starts_from_mumbai:
+        # DN: Mumbai → destination
+        # Before boundary = Zone A (suburban) = threshold
+        # After boundary = Zone B (mainline) = None
+        return zone_a_threshold if halt_idx <= boundary_idx else None
+    else:
+        # UP: destination → Mumbai
+        # Before boundary = Zone B (mainline) = None
+        # After boundary = Zone A (suburban) = threshold
+        return None if halt_idx <= boundary_idx else zone_a_threshold
 
 
 def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
