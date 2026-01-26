@@ -522,13 +522,13 @@
           <tr>
             <th>Halt</th>
             <th>Speed @1000m</th>
-            <th>Speed @500m</th>
+            <th>Speed @400m</th>
             <th>Speed @250m</th>
             <th>Decel 1000→0</th>
-            <th>Decel 500→0</th>
+            <th>Decel 400→0</th>
             <th>Decel 250→0</th>
-            <th>Decel 1000→500</th>
-            <th>Decel 500→250</th>
+            <th>Decel 1000→400</th>
+            <th>Decel 400→250</th>
             <th>Decel 1000→250</th>
             <th>Sharp Brake</th>
           </tr>
@@ -559,7 +559,7 @@ let __lastPdfFilename = null;
 let __analysisCompleted = false;
 let __analysisSaved = false;
 
-const BRAKE_OFFSETS = [1000, 500, 300, 200, 100, 50, 20];
+const BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20];
 const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
 
 function getCriteria(){
@@ -936,8 +936,8 @@ function renderBrakingTable(halts) {
         // Use zone-based threshold from API (70 for Mumbai suburban, 60/90 for mainline/Konkan)
         const threshold1000m = halt.threshold_1000m || 70;
         if (offset === 1000 && numeric > threshold1000m) warnClass = "warn";
-        // 500m threshold only applies in Zone A (suburban); null in Zone B
-        if (offset === 500 && halt.threshold_500m != null && numeric > halt.threshold_500m) {
+        // 400m threshold only applies in Zone A (suburban); null in Zone B
+        if (offset === 400 && halt.threshold_400m != null && numeric > halt.threshold_400m) {
           warnClass = "warn";
         }
         if (offset === 100) {
@@ -1074,13 +1074,13 @@ function renderDecelerationTable(rows) {
     return `<tr>
       <td>${row.station || "—"}<br/><small>${row.halt_time || ""}</small></td>
       <td>${formatSpeedCell(row.speed_1000_kmph)}</td>
-      <td>${formatSpeedCell(row.speed_500_kmph)}</td>
+      <td>${formatSpeedCell(row.speed_400_kmph)}</td>
       <td>${formatSpeedCell(row.speed_250_kmph)}</td>
       <td>${formatDecelCell(row.decel_full_1000_mps2)}</td>
-      <td>${formatDecelCell(row.decel_full_500_mps2)}</td>
+      <td>${formatDecelCell(row.decel_full_400_mps2)}</td>
       <td>${formatDecelCell(row.decel_full_250_mps2)}</td>
-      <td>${formatDecelCell(row.decel_1000_to_500_mps2)}</td>
-      <td>${formatDecelCell(row.decel_500_to_250_mps2)}</td>
+      <td>${formatDecelCell(row.decel_1000_to_400_mps2)}</td>
+      <td>${formatDecelCell(row.decel_400_to_250_mps2)}</td>
       <td>${formatDecelCell(row.decel_1000_to_250_mps2)}</td>
       <td>${sharpText}</td>
     </tr>`;

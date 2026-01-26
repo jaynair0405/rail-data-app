@@ -350,7 +350,7 @@
         </div>
         <div class="summary-card zone-a">
             <div class="summary-value" id="count-zone-a">-</div>
-            <div class="summary-label">500m Zone A Violations</div>
+            <div class="summary-label">400m Zone A Violations</div>
             <div class="summary-sublabel">Suburban (30/40 km/h threshold)</div>
         </div>
         <div class="summary-card ghat">
@@ -382,12 +382,12 @@
         </div>
     </div>
 
-    <!-- Section 2: 500m Zone A Violations -->
+    <!-- Section 2: 400m Zone A Violations -->
     <div class="section-card">
         <div class="section-header">
             <div class="section-title">
                 <div class="section-icon icon-green"><i class="fa-solid fa-city"></i></div>
-                <span>Speed at 500m - Zone A (Suburban)</span>
+                <span>Speed at 400m - Zone A (Suburban)</span>
             </div>
             <span class="section-badge badge-green" id="badge-zone-a">0 violations</span>
         </div>
@@ -473,18 +473,18 @@ async function loadViolations() {
 
             // Update summary cards
             document.getElementById('count-zone-b').textContent = counts['1000m_zone_b'];
-            document.getElementById('count-zone-a').textContent = counts['500m_zone_a'];
+            document.getElementById('count-zone-a').textContent = counts['400m_zone_a'];
             document.getElementById('count-ghat').textContent = counts['ghat'];
             document.getElementById('count-total').textContent = counts['total'];
 
             // Update badges
             document.getElementById('badge-zone-b').textContent = `${counts['1000m_zone_b']} violation${counts['1000m_zone_b'] !== 1 ? 's' : ''}`;
-            document.getElementById('badge-zone-a').textContent = `${counts['500m_zone_a']} violation${counts['500m_zone_a'] !== 1 ? 's' : ''}`;
+            document.getElementById('badge-zone-a').textContent = `${counts['400m_zone_a']} violation${counts['400m_zone_a'] !== 1 ? 's' : ''}`;
             document.getElementById('badge-ghat').textContent = `${counts['ghat']} violation${counts['ghat'] !== 1 ? 's' : ''}`;
 
             // Render tables
             renderViolationTable('table-zone-b', data['1000m_zone_b'], '1000m', '60/90');
-            renderViolationTable('table-zone-a', data['500m_zone_a'], '500m', '30/40');
+            renderViolationTable('table-zone-a', data['400m_zone_a'], '400m', '30/40');
             renderViolationTable('table-ghat', data['ghat'], '1000m', '40');
 
         } else {

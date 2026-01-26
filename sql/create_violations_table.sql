@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS div_rtis_violations (
     ncli_alp_name VARCHAR(100),
 
     -- Violation Details
-    violation_type ENUM('1000m_zone_b', '500m_zone_a', 'ghat') NOT NULL,
+    violation_type ENUM('1000m_zone_b', '400m_zone_a', 'ghat') NOT NULL,
     speed DECIMAL(5,1) NOT NULL,
     threshold DECIMAL(5,1) NOT NULL,
     halt_station VARCHAR(50),

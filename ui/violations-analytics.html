@@ -334,7 +334,7 @@
                 <select id="violation-type-filter">
                     <option value="all">All Types</option>
                     <option value="1000m_zone_b">1000m Zone B</option>
-                    <option value="500m_zone_a">500m Zone A</option>
+                    <option value="400m_zone_a">400m Zone A</option>
                     <option value="ghat">Ghat Section</option>
                 </select>
             </div>
@@ -362,7 +362,7 @@
         </div>
         <div class="summary-card">
             <div class="summary-value" id="summary-zone-a">-</div>
-            <div class="summary-label">Zone A (500m)</div>
+            <div class="summary-label">Zone A (400m)</div>
         </div>
         <div class="summary-card">
             <div class="summary-value" id="summary-ghat">-</div>
@@ -880,7 +880,7 @@ function renderZoneComparison(container, data) {
     currentChart = new Chart(ctx, {
         type: 'doughnut',
         data: {
-            labels: ['Zone B (1000m)', 'Zone A (500m)', 'Ghat Section'],
+            labels: ['Zone B (1000m)', 'Zone A (400m)', 'Ghat Section'],
             datasets: [{
                 data: [data.zone_b || 0, data.zone_a || 0, data.ghat || 0],
                 backgroundColor: ['#3b82f6', '#10b981', '#f59e0b']
@@ -928,7 +928,7 @@ function renderSeverityTable(container, data) {
 function formatViolationType(type) {
     const map = {
         '1000m_zone_b': '<span style="color: #3b82f6;">Zone B</span>',
-        '500m_zone_a': '<span style="color: #10b981;">Zone A</span>',
+        '400m_zone_a': '<span style="color: #10b981;">Zone A</span>',
         'ghat': '<span style="color: #f59e0b;">Ghat</span>'
     };
     return map[type] || type;

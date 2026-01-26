@@ -86,7 +86,7 @@ STATION_SEQUENCE_LOOKAHEAD_ROWS = 1500
 STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
-BRAKE_OFFSETS = [1000, 500, 300, 200, 100, 50, 20]
+BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20]
 BRAKE_EVENT_TOLERANCE = 0.3
 BRAKE_REQUIRED_DROP = 45.0
 BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
@@ -1729,7 +1729,7 @@ def braking_profile(criteria: dict = Body(...)):
         halt["threshold_1000m"] = _get_1000m_threshold(
             idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
         )
-        halt["threshold_500m"] = _get_500m_threshold(
+        halt["threshold_400m"] = _get_400m_threshold(
             idx, boundary_halt_idx, from_station, direction, train_number
         )
         halt["in_ghat_section"] = in_ghat  # Include for UI debugging/display
@@ -2324,11 +2324,11 @@ def _render_pdf_report(
                         if speed > threshold_1000m:
                             warn_text_cells.append((col_idx, row_idx))
                     elif offset == 500:
-                        # 500m threshold only applies in Zone A (suburban)
-                        threshold_500m = _get_500m_threshold(
+                        # 400m threshold only applies in Zone A (suburban)
+                        threshold_400m = _get_400m_threshold(
                             halt_list_idx, boundary_halt_idx, from_station, direction, train_number
                         )
-                        if threshold_500m is not None and speed > threshold_500m:
+                        if threshold_400m is not None and speed > threshold_400m:
                             warn_text_cells.append((col_idx, row_idx))
                 else:
                     row.append("—")
@@ -3229,7 +3229,7 @@ async def get_alp_by_hrms(hrms_id: str):
 async def get_daily_violations(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     date_type: str = Query(default="analysis", description="Date type: analysis (created_at) or working (working_date)"),
-    violation_type: str = Query(default="all", description="Type: all, 1000m_zone_b, 500m_zone_a, ghat")
+    violation_type: str = Query(default="all", description="Type: all, 1000m_zone_b, 400m_zone_a, ghat")
 ):
     """
     Get daily violations report for a specific date.
@@ -3241,7 +3241,7 @@ async def get_daily_violations(
 
     Returns violations grouped by type:
     - 1000m_zone_b: Zone B (mainline) violations at 1000m (>60 or >90 for 222xx)
-    - 500m_zone_a: Zone A (suburban) violations at 500m (>30 or >40 for 222xx)
+    - 400m_zone_a: Zone A (suburban) violations at 400m (>30 or >40 for 222xx)
     - ghat: Ghat section violations at 1000m (>40, UP direction only)
     """
     try:
@@ -3291,7 +3291,7 @@ async def get_daily_violations(
         # Group by violation type for easier UI rendering
         grouped = {
             "1000m_zone_b": [],
-            "500m_zone_a": [],
+            "400m_zone_a": [],
             "ghat": []
         }
 
@@ -3314,7 +3314,7 @@ async def get_daily_violations(
             "data": grouped,
             "counts": {
                 "1000m_zone_b": len(grouped["1000m_zone_b"]),
-                "500m_zone_a": len(grouped["500m_zone_a"]),
+                "400m_zone_a": len(grouped["400m_zone_a"]),
                 "ghat": len(grouped["ghat"]),
                 "total": len(results)
             }
@@ -3328,7 +3328,7 @@ async def get_daily_violations(
 async def export_violations_pdf(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     date_type: str = Query(default="analysis", description="Date type: analysis (created_at) or working (working_date)"),
-    violation_type: str = Query(default="all", description="Type: all, 1000m_zone_b, 500m_zone_a, ghat")
+    violation_type: str = Query(default="all", description="Type: all, 1000m_zone_b, 400m_zone_a, ghat")
 ):
     """Export daily violations report as PDF"""
     if SimpleDocTemplate is None:
@@ -3364,7 +3364,7 @@ async def export_violations_pdf(
         conn.close()
 
         # Group by violation type
-        grouped = {"1000m_zone_b": [], "500m_zone_a": [], "ghat": []}
+        grouped = {"1000m_zone_b": [], "400m_zone_a": [], "ghat": []}
         for row in results:
             vtype = row.get("violation_type")
             if vtype in grouped:
@@ -3383,7 +3383,7 @@ async def export_violations_pdf(
         # Define table headers and section titles
         section_info = {
             "1000m_zone_b": ("Speed Violations at 1000m (Zone B - Mainline)", "60/90 km/h threshold"),
-            "500m_zone_a": ("Speed Violations at 500m (Zone A - Suburban)", "30/40 km/h threshold"),
+            "400m_zone_a": ("Speed Violations at 400m (Zone A - Suburban)", "30/40 km/h threshold"),
             "ghat": ("Ghat Section Violations (Steep Gradient)", "40 km/h threshold"),
         }
 
@@ -3472,7 +3472,7 @@ async def get_violations_analytics(
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN violation_type = '1000m_zone_b' THEN 1 ELSE 0 END) as zone_b,
-                SUM(CASE WHEN violation_type = '500m_zone_a' THEN 1 ELSE 0 END) as zone_a,
+                SUM(CASE WHEN violation_type = '400m_zone_a' THEN 1 ELSE 0 END) as zone_a,
                 SUM(CASE WHEN violation_type = 'ghat' THEN 1 ELSE 0 END) as ghat
             FROM div_rtis_violations
             WHERE DATE(working_date) BETWEEN %s AND %s
@@ -3655,7 +3655,7 @@ async def get_violations_analytics(
             query = f"""
                 SELECT halt_station, COUNT(*) as count,
                        SUM(CASE WHEN violation_type = '1000m_zone_b' THEN 1 ELSE 0 END) as zone_b,
-                       SUM(CASE WHEN violation_type = '500m_zone_a' THEN 1 ELSE 0 END) as zone_a,
+                       SUM(CASE WHEN violation_type = '400m_zone_a' THEN 1 ELSE 0 END) as zone_a,
                        SUM(CASE WHEN violation_type = 'ghat' THEN 1 ELSE 0 END) as ghat
                 FROM div_rtis_violations
                 WHERE DATE(working_date) BETWEEN %s AND %s {type_filter}
@@ -3672,7 +3672,7 @@ async def get_violations_analytics(
                 SELECT CONCAT(a.from_station, ' - ', a.to_station) as route,
                        COUNT(*) as count,
                        SUM(CASE WHEN v.violation_type = '1000m_zone_b' THEN 1 ELSE 0 END) as zone_b,
-                       SUM(CASE WHEN v.violation_type = '500m_zone_a' THEN 1 ELSE 0 END) as zone_a,
+                       SUM(CASE WHEN v.violation_type = '400m_zone_a' THEN 1 ELSE 0 END) as zone_a,
                        SUM(CASE WHEN v.violation_type = 'ghat' THEN 1 ELSE 0 END) as ghat
                 FROM div_rtis_violations v
                 LEFT JOIN div_rtis_analyses a ON v.analysis_id = a.id
@@ -4882,7 +4882,7 @@ def _detect_violations(
 
     Violation types:
     - '1000m_zone_b': Zone B (mainline) violations at 1000m (>60 or >90 for 222xx)
-    - '500m_zone_a': Zone A (suburban) violations at 500m (>30 or >40 for 222xx)
+    - '400m_zone_a': Zone A (suburban) violations at 400m (>30 or >40 for 222xx)
     - 'ghat': Ghat section violations at 1000m (>40, UP direction only)
     """
     if not halts:
@@ -4907,8 +4907,8 @@ def _detect_violations(
     # Zone B threshold: 90 for trains starting with "222", else 60
     zone_b_threshold = 90.0 if train_number.startswith("222") else 60.0
 
-    # Zone A 500m threshold: 40 for trains starting with "222", else 30
-    zone_a_500m_threshold = 40.0 if train_number.startswith("222") else 30.0
+    # Zone A 400m threshold: 40 for trains starting with "222", else 30
+    zone_a_400m_threshold = 40.0 if train_number.startswith("222") else 30.0
 
     # Ghat threshold: always 40
     ghat_threshold = 40.0
@@ -4954,16 +4954,16 @@ def _detect_violations(
                     "zone": "mainline",
                 })
 
-        # Check 500m speed (Zone A only)
-        reading_500 = speeds.get("500")
-        if reading_500 and isinstance(reading_500.get("speed"), (int, float)):
-            speed_500 = reading_500["speed"]
+        # Check 400m speed (Zone A only)
+        reading_400 = speeds.get("400")
+        if reading_400 and isinstance(reading_400.get("speed"), (int, float)):
+            speed_400 = reading_400["speed"]
 
-            if in_zone_a and speed_500 > zone_a_500m_threshold:
+            if in_zone_a and speed_400 > zone_a_400m_threshold:
                 violations.append({
-                    "violation_type": "500m_zone_a",
-                    "speed": speed_500,
-                    "threshold": zone_a_500m_threshold,
+                    "violation_type": "400m_zone_a",
+                    "speed": speed_400,
+                    "threshold": zone_a_400m_threshold,
                     "halt_station": halt_station,
                     "zone": "suburban",
                 })
@@ -5077,7 +5077,7 @@ def _get_1000m_threshold(
         return zone_b_threshold if halt_idx <= boundary_idx else 70.0
 
 
-def _get_500m_threshold(
+def _get_400m_threshold(
     halt_idx: int,
     boundary_idx: int | None,
     from_station: str | None,
@@ -5085,19 +5085,19 @@ def _get_500m_threshold(
     train_number: str | None = None,
 ) -> float | None:
     """
-    Determine 500m speed threshold based on halt's zone.
+    Determine 400m speed threshold based on halt's zone.
 
-    Only Zone A (Mumbai suburban side) has a 500m threshold:
+    Only Zone A (Mumbai suburban side) has a 400m threshold:
         - Trains starting with "222": 40 km/h
         - Other trains: 30 km/h
 
-    Zone B (mainline/Konkan): No 500m threshold (returns None)
+    Zone B (mainline/Konkan): No 400m threshold (returns None)
 
     For DN direction: halts before boundary = Zone A (threshold), after = Zone B (None)
     For UP direction: halts before boundary = Zone B (None), after = Zone A (threshold)
     """
     if boundary_idx is None:
-        return None  # Default: no 500m threshold if no boundary found
+        return None  # Default: no 400m threshold if no boundary found
 
     from_norm = (from_station or "").strip().upper()
     dir_norm = (direction or "").strip().upper()
@@ -5230,9 +5230,9 @@ def _halt_deceleration_metrics(
 
     Returns list of dicts with:
     - sequence, station, logging_time
-    - speed_1000_kmph / speed_500_kmph (approach speeds)
-    - decel_full_1000_mps2 / decel_full_500_mps2 (uniform slowdown to 0)
-    - decel_1000_to_500_mps2 (actual rate between the two checkpoints)
+    - speed_1000_kmph / speed_400_kmph (approach speeds)
+    - decel_full_1000_mps2 / decel_full_400_mps2 (uniform slowdown to 0)
+    - decel_1000_to_400_mps2 (actual rate between the two checkpoints)
     """
 
     def _norm_station(value: str | None) -> str:
@@ -5302,10 +5302,10 @@ def _halt_deceleration_metrics(
     for halt in filtered:
         speeds = halt.get("speeds", {})
         sample_1000 = speeds.get("1000")
-        sample_500 = speeds.get("500")
+        sample_400 = speeds.get("400")
         sample_250 = speeds.get("250")
         dist_1000 = _actual_distance(1000.0, sample_1000)
-        dist_500 = _actual_distance(500.0, sample_500)
+        dist_400 = _actual_distance(400.0, sample_400)
         dist_250 = _actual_distance(250.0, sample_250)
 
         results.append({
@@ -5313,30 +5313,30 @@ def _halt_deceleration_metrics(
             "station": halt.get("station"),
             "halt_time": halt.get("logging_time"),
             "speed_1000_kmph": sample_1000.get("speed") if sample_1000 else None,
-            "speed_500_kmph": sample_500.get("speed") if sample_500 else None,
+            "speed_400_kmph": sample_400.get("speed") if sample_400 else None,
             "speed_250_kmph": sample_250.get("speed") if sample_250 else None,
             "decel_full_1000_mps2": _uniform_decel(
                 sample_1000.get("speed") if sample_1000 else None,
                 dist_1000,
             ),
-            "decel_full_500_mps2": _uniform_decel(
-                sample_500.get("speed") if sample_500 else None,
-                dist_500,
+            "decel_full_400_mps2": _uniform_decel(
+                sample_400.get("speed") if sample_400 else None,
+                dist_400,
             ),
             "decel_full_250_mps2": _uniform_decel(
                 sample_250.get("speed") if sample_250 else None,
                 dist_250,
             ),
-            "decel_1000_to_500_mps2": _segment_decel(
+            "decel_1000_to_400_mps2": _segment_decel(
                 sample_1000,
-                sample_500,
+                sample_400,
                 1000.0,
-                500.0,
+                400.0,
             ),
-            "decel_500_to_250_mps2": _segment_decel(
-                sample_500,
+            "decel_400_to_250_mps2": _segment_decel(
+                sample_400,
                 sample_250,
-                500.0,
+                400.0,
                 250.0,
             ),
             "decel_1000_to_250_mps2": _segment_decel(
