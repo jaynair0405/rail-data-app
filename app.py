@@ -2871,7 +2871,31 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Prepare SQL insert (includes ALP fields)
+        # Compute BFT/BPT status from brake tests
+        bft_status = 'NOT RUN'
+        bpt_status = 'NOT RUN'
+        if DF is not None and not DF.is_empty():
+            try:
+                filtered = apply_criteria(DF, criteria)
+                if filtered.height > 0:
+                    start_station = criteria.get("from_station_equals")
+                    direction = criteria.get("direction_equals")
+                    brake_tests = _brake_tests(filtered, start_station, direction)
+                    if brake_tests:
+                        feel_status = brake_tests.get('feel', {}).get('status', 'NOT RUN')
+                        power_status = brake_tests.get('power', {}).get('status', 'NOT RUN')
+                        if feel_status == 'PASS':
+                            bft_status = 'PASS'
+                        elif feel_status == 'FAIL':
+                            bft_status = 'FAIL'
+                        if power_status == 'PASS':
+                            bpt_status = 'PASS'
+                        elif power_status == 'FAIL':
+                            bpt_status = 'FAIL'
+            except Exception as bte:
+                print(f"[WARN] Failed to compute brake test status: {bte}")
+
+        # Prepare SQL insert (includes ALP fields and BFT/BPT status)
         sql = """
             INSERT INTO div_rtis_analyses (
                 user_id, lp_hrms_id, lp_name, ncli_id, ncli_name,
@@ -2881,7 +2905,8 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                 loco_number, coach_type, load_type, brake_position,
                 csv_filename, csv_file_size, pdf_filename,
                 total_distance, total_duration, max_speed, avg_speed,
-                halt_count, braking_events_count, notes, metadata
+                halt_count, braking_events_count, notes, metadata,
+                bft_status, bpt_status
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s,
@@ -2890,7 +2915,8 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                 %s, %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, %s, %s
+                %s, %s, %s, %s,
+                %s, %s
             )
         """
 
@@ -2928,7 +2954,9 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
             results.get("halt_count", 0),
             results.get("braking_events_count", 0),
             notes,
-            json.dumps(metadata) if metadata else None
+            json.dumps(metadata) if metadata else None,
+            bft_status,
+            bpt_status
         )
 
         # Execute insert
@@ -5598,6 +5626,824 @@ def _brake_tests(df: pl.DataFrame, start_station: str | None, direction: str | N
         "feel": summarize(feel_raw),
         "power": summarize(power_raw),
     }
+
+
+# ------------------------------
+# Daily Summary APIs (SIM Down / NON RTIS)
+# ------------------------------
+
+@app.get("/api/daily-entries")
+async def get_daily_entries(
+    request: Request,
+    date: str = Query(None),
+    status: str = Query(None)
+):
+    """Get manual daily entries (SIM Down / NON RTIS) for a date"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        where_clauses = []
+        params = []
+
+        if date:
+            where_clauses.append("working_date = %s")
+            params.append(date)
+        if status:
+            where_clauses.append("rtis_status = %s")
+            params.append(status)
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        cursor.execute(f"""
+            SELECT * FROM div_rtis_daily_entries
+            WHERE {where_sql}
+            ORDER BY working_date DESC, train_number
+        """, params)
+        entries = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "entries": entries}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch entries: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.post("/api/daily-entry")
+async def add_daily_entry(request: Request):
+    """Add a SIM Down or NON RTIS entry"""
+    try:
+        user = get_current_user(request)
+        data = await request.json()
+
+        working_date = data.get('working_date')
+        rtis_status = data.get('rtis_status')
+        train_number = data.get('train_number', '').strip()
+        loco_number = data.get('loco_number', '').strip()
+
+        if not working_date or not rtis_status or not train_number or not loco_number:
+            return JSONResponse(
+                {"error": "working_date, rtis_status, train_number, and loco_number are required", "success": False},
+                status_code=400
+            )
+
+        if rtis_status not in ['SIM Down', 'NON RTIS']:
+            return JSONResponse(
+                {"error": "rtis_status must be 'SIM Down' or 'NON RTIS'", "success": False},
+                status_code=400
+            )
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO div_rtis_daily_entries (
+                working_date, rtis_status, train_number, loco_number,
+                from_station, to_station, departure_time, arrival_time,
+                lp_name, lp_hrms_id, ncli_name, alp_name, alp_hrms_id, ncli_alp_name, entered_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            working_date,
+            rtis_status,
+            train_number,
+            loco_number,
+            data.get('from_station', '').strip() or None,
+            data.get('to_station', '').strip() or None,
+            data.get('departure_time') or None,
+            data.get('arrival_time') or None,
+            data.get('lp_name', '').strip() or None,
+            data.get('lp_hrms_id', '').strip() or None,
+            data.get('ncli_name', '').strip() or None,
+            data.get('alp_name', '').strip() or None,
+            data.get('alp_hrms_id', '').strip() or None,
+            data.get('ncli_alp_name', '').strip() or None,
+            user.get('name') if user else data.get('entered_by', '').strip() or None
+        ))
+        conn.commit()
+        entry_id = cursor.lastrowid
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": "Entry added successfully", "id": entry_id}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to add entry: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.put("/api/daily-entry/{entry_id}")
+async def update_daily_entry(request: Request, entry_id: int):
+    """Update a daily entry"""
+    try:
+        data = await request.json()
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Check if entry exists
+        cursor.execute("SELECT id FROM div_rtis_daily_entries WHERE id = %s", [entry_id])
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": "Entry not found", "success": False},
+                status_code=404
+            )
+
+        # Build update
+        updates = []
+        params = []
+        fields = ['working_date', 'rtis_status', 'train_number', 'loco_number',
+                  'from_station', 'to_station', 'departure_time', 'arrival_time',
+                  'lp_name', 'lp_hrms_id', 'ncli_name', 'alp_name', 'alp_hrms_id', 'ncli_alp_name']
+
+        for field in fields:
+            if field in data:
+                updates.append(f"{field} = %s")
+                val = data[field]
+                if isinstance(val, str):
+                    val = val.strip() or None
+                params.append(val)
+
+        if updates:
+            params.append(entry_id)
+            cursor.execute(f"""
+                UPDATE div_rtis_daily_entries SET {', '.join(updates)} WHERE id = %s
+            """, params)
+            conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": "Entry updated successfully"}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to update entry: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.delete("/api/daily-entry/{entry_id}")
+async def delete_daily_entry(request: Request, entry_id: int):
+    """Delete a daily entry"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM div_rtis_daily_entries WHERE id = %s", [entry_id])
+        conn.commit()
+
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": "Entry not found", "success": False},
+                status_code=404
+            )
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": "Entry deleted successfully"}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to delete entry: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/daily-summary")
+async def get_daily_summary(request: Request, date: str = Query(...)):
+    """Get combined daily summary (Working + SIM Down + NON RTIS)"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        entries = []
+
+        # 1. Get Working entries from div_rtis_analyses (by analysis_date)
+        cursor.execute("""
+            SELECT
+                'Working' as rtis_status,
+                working_date,
+                train_number,
+                loco_number,
+                from_station,
+                to_station,
+                lp_name,
+                lp_hrms_id,
+                alp_name,
+                alp_hrms_id,
+                ncli_name,
+                analyst_name as analyzed_by,
+                bft_status,
+                bpt_status,
+                'analysis' as source,
+                id as source_id
+            FROM div_rtis_analyses
+            WHERE DATE(analysis_date) = %s
+            ORDER BY train_number
+        """, [date])
+        working_entries = cursor.fetchall()
+        entries.extend(working_entries)
+
+        # 2. Get SIM Down / NON RTIS entries (by created_at date - when entry was made)
+        cursor.execute("""
+            SELECT
+                rtis_status,
+                working_date,
+                train_number,
+                loco_number,
+                from_station,
+                to_station,
+                lp_name,
+                lp_hrms_id,
+                ncli_name,
+                alp_name,
+                alp_hrms_id,
+                ncli_alp_name,
+                '------' as analyzed_by,
+                'NOT RUN' as bft_status,
+                'NOT RUN' as bpt_status,
+                'manual' as source,
+                id as source_id
+            FROM div_rtis_daily_entries
+            WHERE DATE(created_at) = %s
+            ORDER BY train_number
+        """, [date])
+        manual_entries = cursor.fetchall()
+        entries.extend(manual_entries)
+
+        # Sort all entries by train number
+        entries.sort(key=lambda x: x.get('train_number', '') or '')
+
+        # Add serial numbers
+        for i, entry in enumerate(entries, 1):
+            entry['sr_no'] = i
+
+        # Summary counts
+        working_count = len([e for e in entries if e['rtis_status'] == 'Working'])
+        sim_down_count = len([e for e in entries if e['rtis_status'] == 'SIM Down'])
+        non_rtis_count = len([e for e in entries if e['rtis_status'] == 'NON RTIS'])
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "date": date,
+            "summary": {
+                "total": len(entries),
+                "working": working_count,
+                "sim_down": sim_down_count,
+                "non_rtis": non_rtis_count
+            },
+            "entries": entries
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch daily summary: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/export-daily-summary")
+async def export_daily_summary(request: Request, date: str = Query(...)):
+    """Export daily summary as CSV"""
+    try:
+        # Get the summary data
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        entries = []
+
+        # Get Working entries (by analysis_date)
+        cursor.execute("""
+            SELECT
+                'Working' as rtis_status,
+                working_date,
+                train_number,
+                loco_number,
+                from_station,
+                to_station,
+                lp_name,
+                lp_hrms_id,
+                ncli_name,
+                alp_name,
+                alp_hrms_id,
+                ncli_alp_name,
+                analyst_name as analyzed_by,
+                bft_status,
+                bpt_status
+            FROM div_rtis_analyses
+            WHERE DATE(analysis_date) = %s
+        """, [date])
+        entries.extend(cursor.fetchall())
+
+        # Get manual entries (by created_at date)
+        cursor.execute("""
+            SELECT
+                rtis_status,
+                working_date,
+                train_number,
+                loco_number,
+                from_station,
+                to_station,
+                lp_name,
+                lp_hrms_id,
+                ncli_name,
+                alp_name,
+                alp_hrms_id,
+                ncli_alp_name,
+                '------' as analyzed_by,
+                'NOT RUN' as bft_status,
+                'NOT RUN' as bpt_status
+            FROM div_rtis_daily_entries
+            WHERE DATE(created_at) = %s
+        """, [date])
+        entries.extend(cursor.fetchall())
+
+        cursor.close()
+        conn.close()
+
+        # Sort by train number
+        entries.sort(key=lambda x: x.get('train_number', '') or '')
+
+        # Build CSV
+        import io
+        output = io.StringIO()
+        output.write("SR NO.,Date Of Working,RTIS Status,Train Number,Loco Number,From,To,LP NAME,ALP,NCLI,Analyzed By,BFT Done,BPT Done\n")
+
+        for i, e in enumerate(entries, 1):
+            working_date = e.get('working_date')
+            if working_date:
+                if hasattr(working_date, 'strftime'):
+                    working_date = working_date.strftime('%d/%m/%Y')
+                else:
+                    working_date = str(working_date)
+
+            bft_done = 'Done' if e.get('bft_status') == 'PASS' else ''
+            bpt_done = 'Done' if e.get('bpt_status') == 'PASS' else ''
+
+            row = [
+                str(i),
+                working_date or '',
+                e.get('rtis_status', ''),
+                e.get('train_number', ''),
+                e.get('loco_number', ''),
+                e.get('from_station', '') or '',
+                e.get('to_station', '') or '',
+                e.get('lp_name', '') or '',
+                e.get('alp_name', '') or '',
+                e.get('ncli_name', '') or '',
+                e.get('analyzed_by', '') or '',
+                bft_done,
+                bpt_done
+            ]
+            output.write(','.join([f'"{v}"' if ',' in str(v) else str(v) for v in row]) + '\n')
+
+        csv_content = output.getvalue()
+        output.close()
+
+        # Format filename
+        filename = f"daily_summary_{date}.csv"
+
+        return StreamingResponse(
+            io.BytesIO(csv_content.encode('utf-8')),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to export: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/sim-down-weekly")
+async def get_sim_down_weekly(
+    request: Request,
+    week_start: str = Query(...),
+    week_end: str = Query(...)
+):
+    """Get weekly SIM down report grouped by loco"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT
+                loco_number,
+                COUNT(*) as sim_down_count,
+                GROUP_CONCAT(DISTINCT working_date ORDER BY working_date) as dates
+            FROM div_rtis_daily_entries
+            WHERE rtis_status = 'SIM Down'
+              AND working_date BETWEEN %s AND %s
+            GROUP BY loco_number
+            ORDER BY sim_down_count DESC, loco_number
+        """, [week_start, week_end])
+        locos = cursor.fetchall()
+
+        # Parse dates string to list
+        for loco in locos:
+            if loco['dates']:
+                loco['dates'] = [str(d) for d in loco['dates'].split(',')]
+            else:
+                loco['dates'] = []
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "week_start": week_start,
+            "week_end": week_end,
+            "locos": locos,
+            "total_locos": len(locos)
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch weekly report: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+# ------------------------------
+# Loco Management APIs
+# ------------------------------
+
+@app.get("/api/sheds")
+async def get_sheds(request: Request):
+    """Get all CR sheds"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM div_cr_sheds WHERE is_active = 1 ORDER BY shed_code")
+        sheds = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return {"success": True, "sheds": sheds}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch sheds: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/locos")
+async def get_locos(
+    request: Request,
+    shed: str = Query(None),
+    status: str = Query(None),
+    loco_type: str = Query(None),
+    search: str = Query(None),
+    page: int = Query(1),
+    limit: int = Query(50)
+):
+    """Get locos with optional filters"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Build query with filters
+        where_clauses = []
+        params = []
+
+        if shed:
+            where_clauses.append("current_shed = %s")
+            params.append(shed)
+        if status:
+            where_clauses.append("status = %s")
+            params.append(status)
+        if loco_type:
+            where_clauses.append("loco_type = %s")
+            params.append(loco_type)
+        if search:
+            where_clauses.append("loco_number LIKE %s")
+            params.append(f"%{search}%")
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        # Get total count
+        cursor.execute(f"SELECT COUNT(*) as total FROM div_cr_locos WHERE {where_sql}", params)
+        total = cursor.fetchone()['total']
+
+        # Get paginated results
+        offset = (page - 1) * limit
+        params.extend([limit, offset])
+        cursor.execute(f"""
+            SELECT id, loco_number, loco_type, current_shed, status, commission_date, remarks, updated_at
+            FROM div_cr_locos
+            WHERE {where_sql}
+            ORDER BY current_shed, loco_number
+            LIMIT %s OFFSET %s
+        """, params)
+        locos = cursor.fetchall()
+
+        # Get unique types for filter dropdown
+        cursor.execute("SELECT DISTINCT loco_type FROM div_cr_locos ORDER BY loco_type")
+        types = [row['loco_type'] for row in cursor.fetchall()]
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "locos": locos,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": math.ceil(total / limit),
+            "loco_types": types
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch locos: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.post("/api/locos")
+async def add_loco(request: Request):
+    """Add a new loco"""
+    try:
+        data = await request.json()
+        loco_number = data.get('loco_number', '').strip()
+        loco_type = data.get('loco_type', '').strip()
+        current_shed = data.get('current_shed', '').strip()
+        commission_date = data.get('commission_date') or None
+        remarks = data.get('remarks', '').strip() or None
+
+        if not loco_number:
+            return JSONResponse(
+                {"error": "Loco number is required", "success": False},
+                status_code=400
+            )
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Check if loco already exists
+        cursor.execute("SELECT id FROM div_cr_locos WHERE loco_number = %s", [loco_number])
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": f"Loco {loco_number} already exists", "success": False},
+                status_code=400
+            )
+
+        cursor.execute("""
+            INSERT INTO div_cr_locos (loco_number, loco_type, current_shed, status, commission_date, remarks)
+            VALUES (%s, %s, %s, 'Active', %s, %s)
+        """, [loco_number, loco_type, current_shed, commission_date, remarks])
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": f"Loco {loco_number} added successfully"}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to add loco: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.put("/api/locos/{loco_number}")
+async def update_loco(request: Request, loco_number: str):
+    """Update loco details"""
+    try:
+        data = await request.json()
+        loco_type = data.get('loco_type')
+        current_shed = data.get('current_shed')
+        commission_date = data.get('commission_date')
+        remarks = data.get('remarks')
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Check if loco exists
+        cursor.execute("SELECT id FROM div_cr_locos WHERE loco_number = %s", [loco_number])
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": f"Loco {loco_number} not found", "success": False},
+                status_code=404
+            )
+
+        # Build update query dynamically
+        updates = []
+        params = []
+        if loco_type is not None:
+            updates.append("loco_type = %s")
+            params.append(loco_type)
+        if current_shed is not None:
+            updates.append("current_shed = %s")
+            params.append(current_shed)
+        if commission_date is not None:
+            updates.append("commission_date = %s")
+            params.append(commission_date if commission_date else None)
+        if remarks is not None:
+            updates.append("remarks = %s")
+            params.append(remarks if remarks else None)
+
+        if updates:
+            params.append(loco_number)
+            cursor.execute(f"""
+                UPDATE div_cr_locos SET {', '.join(updates)} WHERE loco_number = %s
+            """, params)
+            conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": f"Loco {loco_number} updated successfully"}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to update loco: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.post("/api/locos/{loco_number}/transfer")
+async def transfer_loco(request: Request, loco_number: str):
+    """Transfer loco to another shed"""
+    try:
+        data = await request.json()
+        to_shed = data.get('to_shed', '').strip()
+        transfer_date = data.get('transfer_date')
+        transfer_type = data.get('transfer_type', 'Internal')
+        remarks = data.get('remarks', '').strip() or None
+        created_by = data.get('created_by', '').strip() or None
+
+        if not to_shed:
+            return JSONResponse(
+                {"error": "Destination shed is required", "success": False},
+                status_code=400
+            )
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get current shed
+        cursor.execute("SELECT current_shed FROM div_cr_locos WHERE loco_number = %s", [loco_number])
+        loco = cursor.fetchone()
+        if not loco:
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": f"Loco {loco_number} not found", "success": False},
+                status_code=404
+            )
+
+        from_shed = loco['current_shed']
+
+        if from_shed == to_shed:
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": f"Loco is already at {to_shed}", "success": False},
+                status_code=400
+            )
+
+        # Update loco's current shed
+        cursor.execute("UPDATE div_cr_locos SET current_shed = %s WHERE loco_number = %s", [to_shed, loco_number])
+
+        # Log transfer in history
+        cursor.execute("""
+            INSERT INTO div_cr_loco_transfers (loco_number, from_shed, to_shed, transfer_date, transfer_type, remarks, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, [loco_number, from_shed, to_shed, transfer_date, transfer_type, remarks, created_by])
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": f"Loco {loco_number} transferred from {from_shed} to {to_shed}"}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to transfer loco: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.put("/api/locos/{loco_number}/status")
+async def update_loco_status(request: Request, loco_number: str):
+    """Update loco status (Active, Transferred Out, Condemned)"""
+    try:
+        data = await request.json()
+        status = data.get('status', '').strip()
+        remarks = data.get('remarks', '').strip() or None
+
+        if status not in ['Active', 'Transferred Out', 'Condemned']:
+            return JSONResponse(
+                {"error": "Invalid status. Must be Active, Transferred Out, or Condemned", "success": False},
+                status_code=400
+            )
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT id FROM div_cr_locos WHERE loco_number = %s", [loco_number])
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": f"Loco {loco_number} not found", "success": False},
+                status_code=404
+            )
+
+        cursor.execute("""
+            UPDATE div_cr_locos SET status = %s, remarks = %s WHERE loco_number = %s
+        """, [status, remarks, loco_number])
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": f"Loco {loco_number} status updated to {status}"}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to update loco status: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/locos/{loco_number}/history")
+async def get_loco_history(request: Request, loco_number: str):
+    """Get transfer history for a loco"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get loco details
+        cursor.execute("""
+            SELECT loco_number, loco_type, current_shed, status, commission_date, remarks
+            FROM div_cr_locos WHERE loco_number = %s
+        """, [loco_number])
+        loco = cursor.fetchone()
+
+        if not loco:
+            cursor.close()
+            conn.close()
+            return JSONResponse(
+                {"error": f"Loco {loco_number} not found", "success": False},
+                status_code=404
+            )
+
+        # Get transfer history
+        cursor.execute("""
+            SELECT from_shed, to_shed, transfer_date, transfer_type, remarks, created_by, created_at
+            FROM div_cr_loco_transfers
+            WHERE loco_number = %s
+            ORDER BY transfer_date DESC, created_at DESC
+        """, [loco_number])
+        history = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "loco": loco, "history": history}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch loco history: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/locos/search/{query}")
+async def search_locos(request: Request, query: str):
+    """Quick search locos by number (for autocomplete)"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT loco_number, loco_type, current_shed
+            FROM div_cr_locos
+            WHERE loco_number LIKE %s AND status = 'Active'
+            ORDER BY loco_number
+            LIMIT 20
+        """, [f"%{query}%"])
+        locos = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "locos": locos}
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to search locos: {str(e)}", "success": False},
+            status_code=500
+        )
 
 
 # ------------------------------

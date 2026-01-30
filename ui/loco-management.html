@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CR Loco Management</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        /* Header */
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn-success { background: var(--success); color: white; border-color: var(--success); }
+        .btn-warning { background: var(--warning); color: white; border-color: var(--warning); }
+        .btn-danger { background: var(--danger); color: white; border-color: var(--danger); }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .header-actions { display: flex; gap: 8px; }
+
+        /* Filter Bar */
+        .filter-bar {
+            display: flex;
+            gap: 16px;
+            align-items: flex-end;
+            background: var(--surface);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        .filter-group input, .filter-group select {
+            padding: 8px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 140px;
+        }
+
+        .filter-group input:focus, .filter-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        /* Stats Cards */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .stat-value { font-size: 28px; font-weight: 700; color: var(--primary); }
+        .stat-label { font-size: 12px; color: var(--text-light); text-transform: uppercase; margin-top: 4px; }
+
+        /* Table */
+        .table-card {
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .table-title { font-weight: 600; font-size: 16px; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background: #f8fafc;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        tr:hover { background: #f8fafc; }
+
+        .loco-number { font-weight: 600; font-family: monospace; font-size: 14px; }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-active { background: #dcfce7; color: #166534; }
+        .badge-transferred { background: #fef3c7; color: #92400e; }
+        .badge-condemned { background: #fee2e2; color: #991b1b; }
+
+        .shed-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            background: #e0e7ff;
+            color: #3730a3;
+        }
+
+        .type-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            background: #f1f5f9;
+            color: var(--text-light);
+        }
+
+        .actions { display: flex; gap: 4px; }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border-top: 1px solid var(--border);
+        }
+
+        .page-info { color: var(--text-light); font-size: 14px; }
+
+        .page-buttons { display: flex; gap: 4px; }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-overlay.active { display: flex; }
+
+        .modal {
+            background: white;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 { margin: 0; font-size: 18px; }
+        .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-light); }
+
+        .modal-body { padding: 20px; }
+
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text-main); }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .form-group .hint { font-size: 11px; color: var(--text-light); margin-top: 4px; }
+
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        /* History Modal */
+        .history-list { max-height: 400px; overflow-y: auto; }
+        .history-item {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .history-item:last-child { border-bottom: none; }
+        .history-date { font-size: 12px; color: var(--text-light); }
+        .history-detail { font-size: 14px; margin-top: 4px; }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-light);
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-light);
+        }
+        .empty-state i { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            background: #1e293b;
+            color: white;
+            font-size: 14px;
+            z-index: 2000;
+            display: none;
+        }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+        .toast.show { display: block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="page-header">
+            <div class="page-title">
+                <h1><i class="fas fa-train"></i> CR Loco Management</h1>
+                <p>Manage Central Railway locomotives - Add, Transfer, Update status</p>
+            </div>
+            <div class="header-actions">
+                <a href="./" class="btn"><i class="fas fa-arrow-left"></i> Back</a>
+                <button class="btn btn-primary" onclick="openAddModal()"><i class="fas fa-plus"></i> Add Loco</button>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-row" id="statsRow">
+            <div class="stat-card">
+                <div class="stat-value" id="statTotal">-</div>
+                <div class="stat-label">Total Locos</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statAQE">-</div>
+                <div class="stat-label">AQE</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statBSLL">-</div>
+                <div class="stat-label">BSLL</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statDNDE">-</div>
+                <div class="stat-label">DNDE</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statKYNE">-</div>
+                <div class="stat-label">KYNE</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="statPADX">-</div>
+                <div class="stat-label">PADX</div>
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>Shed</label>
+                <select id="filterShed" onchange="loadLocos(1)">
+                    <option value="">All Sheds</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Status</label>
+                <select id="filterStatus" onchange="loadLocos(1)">
+                    <option value="">All Status</option>
+                    <option value="Active" selected>Active</option>
+                    <option value="Transferred Out">Transferred Out</option>
+                    <option value="Condemned">Condemned</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Loco Type</label>
+                <select id="filterType" onchange="loadLocos(1)">
+                    <option value="">All Types</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Search</label>
+                <input type="text" id="filterSearch" placeholder="Loco number..." onkeyup="debounceSearch()">
+            </div>
+            <button class="btn" onclick="clearFilters()"><i class="fas fa-times"></i> Clear</button>
+        </div>
+
+        <!-- Table -->
+        <div class="table-card">
+            <div class="table-header">
+                <span class="table-title">Locomotives</span>
+                <span id="recordCount" class="page-info"></span>
+            </div>
+            <div id="tableContainer">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Loco No.</th>
+                            <th>Type</th>
+                            <th>Shed</th>
+                            <th>Status</th>
+                            <th>Remarks</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="locoTableBody">
+                        <tr><td colspan="6" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="pagination">
+                <span class="page-info" id="pageInfo">Page 1 of 1</span>
+                <div class="page-buttons">
+                    <button class="btn btn-sm" id="btnPrev" onclick="loadLocos(currentPage - 1)" disabled><i class="fas fa-chevron-left"></i> Prev</button>
+                    <button class="btn btn-sm" id="btnNext" onclick="loadLocos(currentPage + 1)" disabled>Next <i class="fas fa-chevron-right"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add/Edit Modal -->
+    <div class="modal-overlay" id="locoModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modalTitle">Add New Loco</h3>
+                <button class="modal-close" onclick="closeModal('locoModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editLocoNumber">
+                <div class="form-group">
+                    <label>Loco Number *</label>
+                    <input type="text" id="inputLocoNumber" placeholder="e.g., 30667" maxlength="10">
+                </div>
+                <div class="form-group">
+                    <label>Loco Type</label>
+                    <select id="inputLocoType">
+                        <option value="">Select Type</option>
+                        <option value="WAP7">WAP7</option>
+                        <option value="WAP5">WAP5</option>
+                        <option value="WAP4">WAP4</option>
+                        <option value="WAG9H">WAG9H</option>
+                        <option value="WAG7">WAG7</option>
+                        <option value="WAG5TAOCHI">WAG5TAOCHI</option>
+                        <option value="WAG5P">WAG5P</option>
+                        <option value="WCAM2">WCAM2</option>
+                        <option value="WCAM3">WCAM3</option>
+                        <option value="WCAG1">WCAG1</option>
+                        <option value="WCM6">WCM6</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Base Shed</label>
+                    <select id="inputShed"></select>
+                </div>
+                <div class="form-group">
+                    <label>Commission Date</label>
+                    <input type="date" id="inputCommissionDate">
+                </div>
+                <div class="form-group">
+                    <label>Remarks</label>
+                    <input type="text" id="inputRemarks" placeholder="Optional remarks">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal('locoModal')">Cancel</button>
+                <button class="btn btn-primary" id="btnSaveLoco" onclick="saveLoco()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Transfer Modal -->
+    <div class="modal-overlay" id="transferModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Transfer Loco</h3>
+                <button class="modal-close" onclick="closeModal('transferModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="transferLocoNumber">
+                <div class="form-group">
+                    <label>Loco Number</label>
+                    <input type="text" id="transferLocoDisplay" readonly style="background: #f1f5f9;">
+                </div>
+                <div class="form-group">
+                    <label>Current Shed</label>
+                    <input type="text" id="transferFromShed" readonly style="background: #f1f5f9;">
+                </div>
+                <div class="form-group">
+                    <label>Transfer To *</label>
+                    <select id="transferToShed"></select>
+                </div>
+                <div class="form-group">
+                    <label>Transfer Date</label>
+                    <input type="date" id="transferDate">
+                </div>
+                <div class="form-group">
+                    <label>Transfer Type</label>
+                    <select id="transferType">
+                        <option value="Internal">Internal (within CR)</option>
+                        <option value="Incoming">Incoming (from other zone)</option>
+                        <option value="Outgoing">Outgoing (to other zone)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Remarks</label>
+                    <input type="text" id="transferRemarks" placeholder="Reason for transfer">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal('transferModal')">Cancel</button>
+                <button class="btn btn-warning" onclick="submitTransfer()"><i class="fas fa-exchange-alt"></i> Transfer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Modal -->
+    <div class="modal-overlay" id="historyModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Transfer History</h3>
+                <button class="modal-close" onclick="closeModal('historyModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="historyLocoInfo" style="margin-bottom: 16px; padding: 12px; background: #f1f5f9; border-radius: 6px;"></div>
+                <div class="history-list" id="historyList">
+                    <div class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal('historyModal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status Modal -->
+    <div class="modal-overlay" id="statusModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Update Loco Status</h3>
+                <button class="modal-close" onclick="closeModal('statusModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="statusLocoNumber">
+                <div class="form-group">
+                    <label>Loco Number</label>
+                    <input type="text" id="statusLocoDisplay" readonly style="background: #f1f5f9;">
+                </div>
+                <div class="form-group">
+                    <label>New Status *</label>
+                    <select id="statusValue">
+                        <option value="Active">Active</option>
+                        <option value="Transferred Out">Transferred Out</option>
+                        <option value="Condemned">Condemned</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Remarks</label>
+                    <input type="text" id="statusRemarks" placeholder="Reason for status change">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal('statusModal')">Cancel</button>
+                <button class="btn btn-danger" onclick="submitStatusChange()">Update Status</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const API_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis' : '';
+        let currentPage = 1;
+        let totalPages = 1;
+        let sheds = [];
+        let locoTypes = [];
+        let searchTimeout = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadSheds();
+            loadLocos(1);
+            document.getElementById('transferDate').valueAsDate = new Date();
+        });
+
+        // Load sheds for dropdowns
+        async function loadSheds() {
+            try {
+                const res = await fetch(`${API_BASE}/api/sheds`);
+                const data = await res.json();
+                if (data.success) {
+                    sheds = data.sheds;
+                    populateShedDropdowns();
+                }
+            } catch (e) {
+                console.error('Failed to load sheds:', e);
+            }
+        }
+
+        function populateShedDropdowns() {
+            const filterShed = document.getElementById('filterShed');
+            const inputShed = document.getElementById('inputShed');
+            const transferToShed = document.getElementById('transferToShed');
+
+            // Filter dropdown
+            filterShed.innerHTML = '<option value="">All Sheds</option>' +
+                sheds.map(s => `<option value="${s.shed_code}">${s.shed_code} - ${s.shed_name}</option>`).join('');
+
+            // Input dropdown
+            inputShed.innerHTML = '<option value="">Select Shed</option>' +
+                sheds.map(s => `<option value="${s.shed_code}">${s.shed_code}</option>`).join('');
+
+            // Transfer dropdown
+            transferToShed.innerHTML = sheds.map(s => `<option value="${s.shed_code}">${s.shed_code}</option>`).join('');
+        }
+
+        // Load locos
+        async function loadLocos(page = 1) {
+            currentPage = page;
+            const shed = document.getElementById('filterShed').value;
+            const status = document.getElementById('filterStatus').value;
+            const type = document.getElementById('filterType').value;
+            const search = document.getElementById('filterSearch').value;
+
+            const params = new URLSearchParams({ page, limit: 50 });
+            if (shed) params.append('shed', shed);
+            if (status) params.append('status', status);
+            if (type) params.append('loco_type', type);
+            if (search) params.append('search', search);
+
+            document.getElementById('locoTableBody').innerHTML = '<tr><td colspan="6" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/locos?${params}`);
+                const data = await res.json();
+
+                if (data.success) {
+                    renderLocos(data.locos);
+                    updatePagination(data.page, data.pages, data.total);
+                    updateStats(data);
+
+                    // Populate type filter if needed
+                    if (data.loco_types && locoTypes.length === 0) {
+                        locoTypes = data.loco_types;
+                        const filterType = document.getElementById('filterType');
+                        filterType.innerHTML = '<option value="">All Types</option>' +
+                            locoTypes.map(t => `<option value="${t}">${t}</option>`).join('');
+                    }
+                }
+            } catch (e) {
+                document.getElementById('locoTableBody').innerHTML = '<tr><td colspan="6" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load data</td></tr>';
+            }
+        }
+
+        function renderLocos(locos) {
+            const tbody = document.getElementById('locoTableBody');
+            if (!locos || locos.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><i class="fas fa-train"></i><br>No locos found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = locos.map(loco => `
+                <tr>
+                    <td class="loco-number">${loco.loco_number}</td>
+                    <td><span class="type-badge">${loco.loco_type || '-'}</span></td>
+                    <td><span class="shed-badge">${loco.current_shed || '-'}</span></td>
+                    <td><span class="badge ${getStatusClass(loco.status)}">${loco.status}</span></td>
+                    <td>${loco.remarks || '-'}</td>
+                    <td class="actions">
+                        <button class="btn btn-sm" onclick="openEditModal('${loco.loco_number}')" title="Edit"><i class="fas fa-edit"></i></button>
+                        <button class="btn btn-sm btn-warning" onclick="openTransferModal('${loco.loco_number}', '${loco.current_shed}')" title="Transfer"><i class="fas fa-exchange-alt"></i></button>
+                        <button class="btn btn-sm" onclick="openHistoryModal('${loco.loco_number}')" title="History"><i class="fas fa-history"></i></button>
+                        <button class="btn btn-sm btn-danger" onclick="openStatusModal('${loco.loco_number}', '${loco.status}')" title="Status"><i class="fas fa-flag"></i></button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function getStatusClass(status) {
+            switch (status) {
+                case 'Active': return 'badge-active';
+                case 'Transferred Out': return 'badge-transferred';
+                case 'Condemned': return 'badge-condemned';
+                default: return '';
+            }
+        }
+
+        function updatePagination(page, pages, total) {
+            totalPages = pages;
+            document.getElementById('pageInfo').textContent = `Page ${page} of ${pages}`;
+            document.getElementById('recordCount').textContent = `${total} locos`;
+            document.getElementById('btnPrev').disabled = page <= 1;
+            document.getElementById('btnNext').disabled = page >= pages;
+        }
+
+        async function updateStats(data) {
+            // Load stats by shed
+            try {
+                const res = await fetch(`${API_BASE}/api/locos?limit=1`);
+                const allData = await res.json();
+
+                // For now, show filtered total
+                document.getElementById('statTotal').textContent = data.total;
+
+                // Load shed-wise counts
+                for (const shed of ['AQE', 'BSLL', 'DNDE', 'KYNE', 'PADX']) {
+                    const shedRes = await fetch(`${API_BASE}/api/locos?shed=${shed}&status=Active&limit=1`);
+                    const shedData = await shedRes.json();
+                    document.getElementById(`stat${shed}`).textContent = shedData.total || 0;
+                }
+            } catch (e) {
+                console.error('Failed to load stats');
+            }
+        }
+
+        function debounceSearch() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => loadLocos(1), 300);
+        }
+
+        function clearFilters() {
+            document.getElementById('filterShed').value = '';
+            document.getElementById('filterStatus').value = 'Active';
+            document.getElementById('filterType').value = '';
+            document.getElementById('filterSearch').value = '';
+            loadLocos(1);
+        }
+
+        // Modal functions
+        function openModal(id) { document.getElementById(id).classList.add('active'); }
+        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+        function openAddModal() {
+            document.getElementById('modalTitle').textContent = 'Add New Loco';
+            document.getElementById('editLocoNumber').value = '';
+            document.getElementById('inputLocoNumber').value = '';
+            document.getElementById('inputLocoNumber').disabled = false;
+            document.getElementById('inputLocoType').value = '';
+            document.getElementById('inputShed').value = '';
+            document.getElementById('inputCommissionDate').value = '';
+            document.getElementById('inputRemarks').value = '';
+            openModal('locoModal');
+        }
+
+        async function openEditModal(locoNumber) {
+            document.getElementById('modalTitle').textContent = 'Edit Loco';
+            document.getElementById('editLocoNumber').value = locoNumber;
+            document.getElementById('inputLocoNumber').value = locoNumber;
+            document.getElementById('inputLocoNumber').disabled = true;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/locos/${locoNumber}/history`);
+                const data = await res.json();
+                if (data.success && data.loco) {
+                    document.getElementById('inputLocoType').value = data.loco.loco_type || '';
+                    document.getElementById('inputShed').value = data.loco.current_shed || '';
+                    document.getElementById('inputCommissionDate').value = data.loco.commission_date || '';
+                    document.getElementById('inputRemarks').value = data.loco.remarks || '';
+                }
+            } catch (e) {
+                console.error('Failed to load loco details');
+            }
+
+            openModal('locoModal');
+        }
+
+        async function saveLoco() {
+            const editLoco = document.getElementById('editLocoNumber').value;
+            const locoNumber = document.getElementById('inputLocoNumber').value.trim();
+            const locoType = document.getElementById('inputLocoType').value;
+            const currentShed = document.getElementById('inputShed').value;
+            const commissionDate = document.getElementById('inputCommissionDate').value;
+            const remarks = document.getElementById('inputRemarks').value.trim();
+
+            if (!locoNumber) {
+                showToast('Loco number is required', 'error');
+                return;
+            }
+
+            const payload = {
+                loco_number: locoNumber,
+                loco_type: locoType,
+                current_shed: currentShed,
+                commission_date: commissionDate || null,
+                remarks: remarks || null
+            };
+
+            try {
+                const url = editLoco ? `${API_BASE}/api/locos/${editLoco}` : `${API_BASE}/api/locos`;
+                const method = editLoco ? 'PUT' : 'POST';
+
+                const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    closeModal('locoModal');
+                    loadLocos(currentPage);
+                } else {
+                    showToast(data.error, 'error');
+                }
+            } catch (e) {
+                showToast('Failed to save loco', 'error');
+            }
+        }
+
+        function openTransferModal(locoNumber, currentShed) {
+            document.getElementById('transferLocoNumber').value = locoNumber;
+            document.getElementById('transferLocoDisplay').value = locoNumber;
+            document.getElementById('transferFromShed').value = currentShed;
+            document.getElementById('transferToShed').value = sheds.find(s => s.shed_code !== currentShed)?.shed_code || '';
+            document.getElementById('transferDate').valueAsDate = new Date();
+            document.getElementById('transferType').value = 'Internal';
+            document.getElementById('transferRemarks').value = '';
+            openModal('transferModal');
+        }
+
+        async function submitTransfer() {
+            const locoNumber = document.getElementById('transferLocoNumber').value;
+            const toShed = document.getElementById('transferToShed').value;
+            const transferDate = document.getElementById('transferDate').value;
+            const transferType = document.getElementById('transferType').value;
+            const remarks = document.getElementById('transferRemarks').value.trim();
+
+            if (!toShed) {
+                showToast('Destination shed is required', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/locos/${locoNumber}/transfer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        to_shed: toShed,
+                        transfer_date: transferDate || null,
+                        transfer_type: transferType,
+                        remarks: remarks || null
+                    })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    closeModal('transferModal');
+                    loadLocos(currentPage);
+                } else {
+                    showToast(data.error, 'error');
+                }
+            } catch (e) {
+                showToast('Failed to transfer loco', 'error');
+            }
+        }
+
+        async function openHistoryModal(locoNumber) {
+            document.getElementById('historyLocoInfo').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+            document.getElementById('historyList').innerHTML = '';
+            openModal('historyModal');
+
+            try {
+                const res = await fetch(`${API_BASE}/api/locos/${locoNumber}/history`);
+                const data = await res.json();
+
+                if (data.success) {
+                    const loco = data.loco;
+                    document.getElementById('historyLocoInfo').innerHTML = `
+                        <strong>${loco.loco_number}</strong> | ${loco.loco_type || '-'} |
+                        Current: <span class="shed-badge">${loco.current_shed}</span> |
+                        Status: <span class="badge ${getStatusClass(loco.status)}">${loco.status}</span>
+                    `;
+
+                    if (data.history && data.history.length > 0) {
+                        document.getElementById('historyList').innerHTML = data.history.map(h => `
+                            <div class="history-item">
+                                <div class="history-date">${h.transfer_date || 'N/A'} | ${h.transfer_type}</div>
+                                <div class="history-detail">
+                                    <span class="shed-badge">${h.from_shed || '?'}</span>
+                                    <i class="fas fa-arrow-right" style="margin: 0 8px; color: var(--text-light);"></i>
+                                    <span class="shed-badge">${h.to_shed || '?'}</span>
+                                    ${h.remarks ? `<br><small style="color: var(--text-light);">${h.remarks}</small>` : ''}
+                                </div>
+                            </div>
+                        `).join('');
+                    } else {
+                        document.getElementById('historyList').innerHTML = '<div class="empty-state">No transfer history</div>';
+                    }
+                }
+            } catch (e) {
+                document.getElementById('historyList').innerHTML = '<div class="empty-state">Failed to load history</div>';
+            }
+        }
+
+        function openStatusModal(locoNumber, currentStatus) {
+            document.getElementById('statusLocoNumber').value = locoNumber;
+            document.getElementById('statusLocoDisplay').value = locoNumber;
+            document.getElementById('statusValue').value = currentStatus;
+            document.getElementById('statusRemarks').value = '';
+            openModal('statusModal');
+        }
+
+        async function submitStatusChange() {
+            const locoNumber = document.getElementById('statusLocoNumber').value;
+            const status = document.getElementById('statusValue').value;
+            const remarks = document.getElementById('statusRemarks').value.trim();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/locos/${locoNumber}/status`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status, remarks: remarks || null })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    closeModal('statusModal');
+                    loadLocos(currentPage);
+                } else {
+                    showToast(data.error, 'error');
+                }
+            } catch (e) {
+                showToast('Failed to update status', 'error');
+            }
+        }
+
+        function showToast(message, type = '') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => { toast.className = 'toast'; }, 3000);
+        }
+    </script>
+</body>
+</html>

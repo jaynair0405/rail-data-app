@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weekly SIM Down Report</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn-success { background: var(--success); color: white; border-color: var(--success); }
+        .btn:hover { opacity: 0.9; }
+
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+
+        /* Week Picker */
+        .week-picker {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: var(--surface);
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+        }
+        .week-picker label { font-weight: 600; font-size: 14px; }
+        .week-picker input {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .week-picker .week-display {
+            padding: 8px 16px;
+            background: #f1f5f9;
+            border-radius: 6px;
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        /* Stats */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+        .stat-card.locos { border-left: 4px solid var(--danger); }
+        .stat-card.incidents { border-left: 4px solid var(--warning); }
+        .stat-card.days { border-left: 4px solid var(--primary); }
+
+        .stat-value { font-size: 32px; font-weight: 700; }
+        .stat-card.locos .stat-value { color: var(--danger); }
+        .stat-card.incidents .stat-value { color: var(--warning); }
+        .stat-card.days .stat-value { color: var(--primary); }
+        .stat-label { font-size: 12px; color: var(--text-light); text-transform: uppercase; margin-top: 4px; }
+
+        /* Table */
+        .table-card {
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .table-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .table-header h3 { margin: 0; font-size: 16px; }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+
+        th {
+            background: #f8fafc;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        tr:hover { background: #f8fafc; }
+
+        .loco-number {
+            font-family: monospace;
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .count-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 14px;
+        }
+        .count-badge.high { background: #fee2e2; color: #991b1b; }
+        .count-badge.medium { background: #fef3c7; color: #92400e; }
+        .count-badge.low { background: #dbeafe; color: #1e40af; }
+
+        .dates-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .date-chip {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #f1f5f9;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Loading / Empty */
+        .loading, .empty-state {
+            text-align: center;
+            padding: 60px 40px;
+            color: var(--text-light);
+        }
+        .empty-state i { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            background: #1e293b;
+            color: white;
+            font-size: 14px;
+            z-index: 2000;
+            display: none;
+        }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+        .toast.show { display: block; }
+
+        @media (max-width: 768px) {
+            .stats-row { grid-template-columns: 1fr; }
+            .week-picker { flex-wrap: wrap; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="page-header">
+            <div class="page-title">
+                <h1><i class="fas fa-calendar-week"></i> Weekly SIM Down Report</h1>
+                <p>Locos with SIM Down status during the selected week</p>
+            </div>
+            <div class="header-actions">
+                <a href="daily-summary.html" class="btn"><i class="fas fa-clipboard-list"></i> Daily Summary</a>
+                <a href="./" class="btn"><i class="fas fa-arrow-left"></i> Back</a>
+            </div>
+        </div>
+
+        <!-- Week Picker -->
+        <div class="week-picker">
+            <label><i class="fas fa-calendar"></i> Select Week:</label>
+            <input type="date" id="weekStartInput" onchange="updateWeekFromDate()">
+            <span>to</span>
+            <input type="date" id="weekEndInput" onchange="loadReport()">
+            <button class="btn" onclick="goToPreviousWeek()"><i class="fas fa-chevron-left"></i> Prev</button>
+            <button class="btn" onclick="goToCurrentWeek()">This Week</button>
+            <button class="btn" onclick="goToNextWeek()">Next <i class="fas fa-chevron-right"></i></button>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-row">
+            <div class="stat-card locos">
+                <div class="stat-value" id="statLocos">-</div>
+                <div class="stat-label">Locos Affected</div>
+            </div>
+            <div class="stat-card incidents">
+                <div class="stat-value" id="statIncidents">-</div>
+                <div class="stat-label">Total Incidents</div>
+            </div>
+            <div class="stat-card days">
+                <div class="stat-value" id="statDays">-</div>
+                <div class="stat-label">Days with SIM Down</div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="table-card">
+            <div class="table-header">
+                <h3>SIM Down Locos</h3>
+                <button class="btn btn-success" onclick="exportReport()">
+                    <i class="fas fa-download"></i> Export CSV
+                </button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>SR</th>
+                        <th>Loco Number</th>
+                        <th>SIM Down Count</th>
+                        <th>Dates</th>
+                    </tr>
+                </thead>
+                <tbody id="reportTableBody">
+                    <tr><td colspan="4" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const API_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis' : '';
+        let currentWeekStart = '';
+        let currentWeekEnd = '';
+        let reportData = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            goToCurrentWeek();
+        });
+
+        function getSaturday(d) {
+            const date = new Date(d);
+            const day = date.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+            // Calculate days to go back to reach Saturday
+            // Sat(6)->0, Sun(0)->1, Mon(1)->2, ..., Fri(5)->6
+            const daysBack = (day + 1) % 7;
+            const saturday = new Date(date);
+            saturday.setDate(date.getDate() - daysBack);
+            return saturday;
+        }
+
+        function getFriday(saturday) {
+            const friday = new Date(saturday);
+            friday.setDate(saturday.getDate() + 6);
+            return friday;
+        }
+
+        function formatDate(date) {
+            return date.toISOString().split('T')[0];
+        }
+
+        function formatDisplayDate(dateStr) {
+            const d = new Date(dateStr);
+            return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        }
+
+        function setWeek(startDate) {
+            const saturday = getSaturday(startDate);
+            const friday = getFriday(saturday);
+            currentWeekStart = formatDate(saturday);
+            currentWeekEnd = formatDate(friday);
+            document.getElementById('weekStartInput').value = currentWeekStart;
+            document.getElementById('weekEndInput').value = currentWeekEnd;
+            loadReport();
+        }
+
+        function goToCurrentWeek() {
+            setWeek(new Date());
+        }
+
+        function goToPreviousWeek() {
+            const current = new Date(currentWeekStart);
+            current.setDate(current.getDate() - 7);
+            setWeek(current);
+        }
+
+        function goToNextWeek() {
+            const current = new Date(currentWeekStart);
+            current.setDate(current.getDate() + 7);
+            setWeek(current);
+        }
+
+        function updateWeekFromDate() {
+            const selectedDate = document.getElementById('weekStartInput').value;
+            if (selectedDate) {
+                setWeek(new Date(selectedDate));
+            }
+        }
+
+        async function loadReport() {
+            currentWeekStart = document.getElementById('weekStartInput').value;
+            currentWeekEnd = document.getElementById('weekEndInput').value;
+
+            if (!currentWeekStart || !currentWeekEnd) return;
+
+            document.getElementById('reportTableBody').innerHTML =
+                '<tr><td colspan="4" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/sim-down-weekly?week_start=${currentWeekStart}&week_end=${currentWeekEnd}`);
+                const data = await res.json();
+
+                if (data.success) {
+                    reportData = data.locos || [];
+                    updateStats(reportData);
+                    renderTable(reportData);
+                } else {
+                    showToast(data.error || 'Failed to load report', 'error');
+                }
+            } catch (e) {
+                console.error('Load report error:', e);
+                document.getElementById('reportTableBody').innerHTML =
+                    '<tr><td colspan="4" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load report</td></tr>';
+            }
+        }
+
+        function updateStats(locos) {
+            const totalLocos = locos.length;
+            const totalIncidents = locos.reduce((sum, l) => sum + (l.sim_down_count || 0), 0);
+
+            // Count unique days with SIM down
+            const uniqueDays = new Set();
+            locos.forEach(l => {
+                (l.dates || []).forEach(d => uniqueDays.add(d));
+            });
+
+            document.getElementById('statLocos').textContent = totalLocos;
+            document.getElementById('statIncidents').textContent = totalIncidents;
+            document.getElementById('statDays').textContent = uniqueDays.size;
+        }
+
+        function renderTable(locos) {
+            const tbody = document.getElementById('reportTableBody');
+
+            if (!locos || locos.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><i class="fas fa-check-circle"></i><br>No SIM Down locos for this week</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = locos.map((l, idx) => `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td class="loco-number">${l.loco_number}</td>
+                    <td><span class="count-badge ${getCountClass(l.sim_down_count)}">${l.sim_down_count}</span></td>
+                    <td>
+                        <div class="dates-list">
+                            ${(l.dates || []).map(d => `<span class="date-chip">${formatDisplayDate(d)}</span>`).join('')}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function getCountClass(count) {
+            if (count >= 5) return 'high';
+            if (count >= 3) return 'medium';
+            return 'low';
+        }
+
+        function exportReport() {
+            if (!reportData || reportData.length === 0) {
+                showToast('No data to export', 'error');
+                return;
+            }
+
+            let csv = 'SR,Loco Number,SIM Down Count,Dates\n';
+            reportData.forEach((l, idx) => {
+                const dates = (l.dates || []).join('; ');
+                csv += `${idx + 1},${l.loco_number},${l.sim_down_count},"${dates}"\n`;
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `sim_down_weekly_${currentWeekStart}_to_${currentWeekEnd}.csv`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            showToast('Report exported', 'success');
+        }
+
+        function showToast(message, type = '') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => { toast.className = 'toast'; }, 3000);
+        }
+    </script>
+</body>
+</html>

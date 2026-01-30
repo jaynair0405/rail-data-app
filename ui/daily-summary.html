@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Summary Report</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn-success { background: var(--success); color: white; border-color: var(--success); }
+        .btn-warning { background: var(--warning); color: white; border-color: var(--warning); }
+        .btn-danger { background: var(--danger); color: white; border-color: var(--danger); }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .btn:hover { opacity: 0.9; }
+
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+
+        /* Date Picker */
+        .date-picker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--surface);
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+        .date-picker input {
+            border: none;
+            font-size: 14px;
+            font-weight: 600;
+            width: 140px;
+        }
+        .date-picker input:focus { outline: none; }
+
+        /* Stats Cards */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+        .stat-card.working { border-left: 4px solid var(--success); }
+        .stat-card.sim-down { border-left: 4px solid var(--danger); }
+        .stat-card.non-rtis { border-left: 4px solid var(--warning); }
+        .stat-card.total { border-left: 4px solid var(--primary); }
+
+        .stat-value { font-size: 32px; font-weight: 700; }
+        .stat-card.working .stat-value { color: var(--success); }
+        .stat-card.sim-down .stat-value { color: var(--danger); }
+        .stat-card.non-rtis .stat-value { color: var(--warning); }
+        .stat-card.total .stat-value { color: var(--primary); }
+        .stat-label { font-size: 12px; color: var(--text-light); text-transform: uppercase; margin-top: 4px; }
+
+        /* Action Buttons */
+        .action-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        /* Table */
+        .table-card {
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th, td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        th {
+            background: #f8fafc;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        tr:hover { background: #f8fafc; }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-working { background: #dcfce7; color: #166534; }
+        .badge-sim-down { background: #fee2e2; color: #991b1b; }
+        .badge-non-rtis { background: #fef3c7; color: #92400e; }
+        .badge-done { background: #dbeafe; color: #1e40af; }
+
+        .loco-number { font-family: monospace; font-weight: 600; }
+
+        .actions { display: flex; gap: 4px; }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+
+        .modal {
+            background: white;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 550px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h3 { margin: 0; font-size: 18px; }
+        .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-light); }
+
+        .modal-body { padding: 20px; }
+
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .form-group { margin-bottom: 14px; }
+        .form-group.full { grid-column: 1 / -1; }
+        .form-group label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--text-main); }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .modal-footer {
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        /* Loading / Empty */
+        .loading, .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-light);
+        }
+        .empty-state i { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            background: #1e293b;
+            color: white;
+            font-size: 14px;
+            z-index: 2000;
+            display: none;
+        }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+        .toast.show { display: block; }
+
+        @media (max-width: 768px) {
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+            .form-row { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="page-header">
+            <div class="page-title">
+                <h1><i class="fas fa-clipboard-list"></i> Daily Summary Report</h1>
+                <p>Combined view of Working, SIM Down, and NON RTIS entries</p>
+            </div>
+            <div class="header-actions">
+                <div class="date-picker">
+                    <i class="fas fa-calendar"></i>
+                    <input type="date" id="selectedDate" onchange="loadSummary()">
+                </div>
+                <a href="./" class="btn"><i class="fas fa-arrow-left"></i> Back</a>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-row">
+            <div class="stat-card working">
+                <div class="stat-value" id="statWorking">-</div>
+                <div class="stat-label">Working (Analyzed)</div>
+            </div>
+            <div class="stat-card sim-down">
+                <div class="stat-value" id="statSimDown">-</div>
+                <div class="stat-label">SIM Down</div>
+            </div>
+            <div class="stat-card non-rtis">
+                <div class="stat-value" id="statNonRtis">-</div>
+                <div class="stat-label">NON RTIS</div>
+            </div>
+            <div class="stat-card total">
+                <div class="stat-value" id="statTotal">-</div>
+                <div class="stat-label">Total Entries</div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-bar">
+            <button class="btn btn-primary" onclick="openAddModal()">
+                <i class="fas fa-plus"></i> Add Entry
+            </button>
+            <a href="sim-down-weekly.html" class="btn btn-warning">
+                <i class="fas fa-calendar-week"></i> Weekly SIM Down Report
+            </a>
+            <div style="flex: 1;"></div>
+            <button class="btn btn-success" onclick="exportCSV()">
+                <i class="fas fa-download"></i> Export CSV
+            </button>
+        </div>
+
+        <!-- Table -->
+        <div class="table-card">
+            <table>
+                <thead>
+                    <tr>
+                        <th>SR</th>
+                        <th>Status</th>
+                        <th>Train</th>
+                        <th>Loco</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>LP Name</th>
+                        <th>NCLI</th>
+                        <th>Analyzed By</th>
+                        <th>BFT</th>
+                        <th>BPT</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="summaryTableBody">
+                    <tr><td colspan="12" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Add/Edit Modal -->
+    <div class="modal-overlay" id="entryModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modalTitle">Add Entry</h3>
+                <button class="modal-close" onclick="closeModal('entryModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editEntryId">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Working Date *</label>
+                        <input type="date" id="entryDate">
+                    </div>
+                    <div class="form-group">
+                        <label>RTIS Status *</label>
+                        <select id="entryStatus">
+                            <option value="SIM Down">SIM Down</option>
+                            <option value="NON RTIS">NON RTIS</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Train Number *</label>
+                        <div style="display: flex; gap: 6px;">
+                            <input type="text" id="entryTrain" placeholder="e.g., 12345" style="flex: 1;">
+                            <button type="button" class="btn btn-sm" onclick="fetchTrainStations()" title="Lookup"><i class="fas fa-search"></i></button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Loco Number *</label>
+                        <input type="text" id="entryLoco" placeholder="e.g., 30667" list="locoList">
+                        <datalist id="locoList"></datalist>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>LP Name</label>
+                        <input type="text" id="entryLpName" list="lpOptions" placeholder="Start typing LP name" autocomplete="off">
+                        <datalist id="lpOptions"></datalist>
+                    </div>
+                    <div class="form-group">
+                        <label>ALP Name</label>
+                        <input type="text" id="entryAlpName" list="alpOptions" placeholder="Start typing ALP name" autocomplete="off">
+                        <datalist id="alpOptions"></datalist>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>From Station</label>
+                        <input type="text" id="entryFrom" placeholder="Auto-filled or enter manually">
+                    </div>
+                    <div class="form-group">
+                        <label>To Station</label>
+                        <input type="text" id="entryTo" placeholder="Auto-filled or enter manually">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>LP HRMS ID</label>
+                        <input type="text" id="entryLpHrms" placeholder="Auto-filled" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>ALP HRMS ID</label>
+                        <input type="text" id="entryAlpHrms" placeholder="Auto-filled" readonly>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>NCLI (LP)</label>
+                        <input type="text" id="entryNcli" placeholder="Auto-filled from LP" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>NCLI (ALP)</label>
+                        <input type="text" id="entryNcliAlp" placeholder="Auto-filled from ALP" readonly>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal('entryModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveEntry()">Save Entry</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const API_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis' : '';
+        let currentDate = '';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set default date to today
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('selectedDate').value = today;
+            currentDate = today;
+            loadSummary();
+        });
+
+        async function loadSummary() {
+            currentDate = document.getElementById('selectedDate').value;
+            if (!currentDate) return;
+
+            document.getElementById('summaryTableBody').innerHTML = '<tr><td colspan="12" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/daily-summary?date=${currentDate}`);
+                const data = await res.json();
+
+                if (data.success) {
+                    updateStats(data.summary);
+                    renderTable(data.entries);
+                } else {
+                    showToast(data.error, 'error');
+                }
+            } catch (e) {
+                document.getElementById('summaryTableBody').innerHTML = '<tr><td colspan="12" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load data</td></tr>';
+            }
+        }
+
+        function updateStats(summary) {
+            document.getElementById('statWorking').textContent = summary.working || 0;
+            document.getElementById('statSimDown').textContent = summary.sim_down || 0;
+            document.getElementById('statNonRtis').textContent = summary.non_rtis || 0;
+            document.getElementById('statTotal').textContent = summary.total || 0;
+        }
+
+        function renderTable(entries) {
+            const tbody = document.getElementById('summaryTableBody');
+
+            if (!entries || entries.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="12" class="empty-state"><i class="fas fa-clipboard"></i><br>No entries for this date</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = entries.map(e => `
+                <tr>
+                    <td>${e.sr_no}</td>
+                    <td><span class="badge ${getStatusClass(e.rtis_status)}">${e.rtis_status}</span></td>
+                    <td>${e.train_number || '-'}</td>
+                    <td class="loco-number">${e.loco_number || '-'}</td>
+                    <td>${e.from_station || '-'}</td>
+                    <td>${e.to_station || '-'}</td>
+                    <td>${e.lp_name || '-'}</td>
+                    <td>${e.ncli_name || '-'}</td>
+                    <td>${e.analyzed_by || '-'}</td>
+                    <td>${e.bft_status === 'PASS' ? '<span class="badge badge-done">Done</span>' : '-'}</td>
+                    <td>${e.bpt_status === 'PASS' ? '<span class="badge badge-done">Done</span>' : '-'}</td>
+                    <td class="actions">
+                        ${e.source === 'manual' ? `
+                            <button class="btn btn-sm" onclick="editEntry(${e.source_id})" title="Edit"><i class="fas fa-edit"></i></button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteEntry(${e.source_id})" title="Delete"><i class="fas fa-trash"></i></button>
+                        ` : '<span style="color: var(--text-light); font-size: 11px;">Auto</span>'}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function getStatusClass(status) {
+            switch (status) {
+                case 'Working': return 'badge-working';
+                case 'SIM Down': return 'badge-sim-down';
+                case 'NON RTIS': return 'badge-non-rtis';
+                default: return '';
+            }
+        }
+
+        function openModal(id) { document.getElementById(id).classList.add('active'); }
+        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+        function openAddModal() {
+            document.getElementById('modalTitle').textContent = 'Add Entry';
+            document.getElementById('editEntryId').value = '';
+            // Default to yesterday (most analyses are for previous day)
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            document.getElementById('entryDate').value = yesterday.toISOString().split('T')[0];
+            document.getElementById('entryStatus').value = 'SIM Down';
+            document.getElementById('entryTrain').value = '';
+            document.getElementById('entryLoco').value = '';
+            document.getElementById('entryFrom').value = '';
+            document.getElementById('entryTo').value = '';
+            document.getElementById('entryLpName').value = '';
+            document.getElementById('entryLpHrms').value = '';
+            document.getElementById('entryNcli').value = '';
+            document.getElementById('entryAlpName').value = '';
+            document.getElementById('entryAlpHrms').value = '';
+            document.getElementById('entryNcliAlp').value = '';
+            openModal('entryModal');
+        }
+
+        async function editEntry(entryId) {
+            try {
+                const res = await fetch(`${API_BASE}/api/daily-entries`);
+                const data = await res.json();
+
+                if (data.success) {
+                    const entry = data.entries.find(e => e.id === entryId);
+                    if (entry) {
+                        document.getElementById('modalTitle').textContent = 'Edit Entry';
+                        document.getElementById('editEntryId').value = entryId;
+                        // Format date for input (YYYY-MM-DD)
+                        let workingDate = entry.working_date || '';
+                        if (workingDate && typeof workingDate === 'string' && workingDate.includes('T')) {
+                            workingDate = workingDate.split('T')[0];
+                        }
+                        document.getElementById('entryDate').value = workingDate;
+                        document.getElementById('entryStatus').value = entry.rtis_status;
+                        document.getElementById('entryTrain').value = entry.train_number || '';
+                        document.getElementById('entryLoco').value = entry.loco_number || '';
+                        document.getElementById('entryFrom').value = entry.from_station || '';
+                        document.getElementById('entryTo').value = entry.to_station || '';
+                        document.getElementById('entryLpName').value = entry.lp_name || '';
+                        document.getElementById('entryLpHrms').value = entry.lp_hrms_id || '';
+                        document.getElementById('entryNcli').value = entry.ncli_name || '';
+                        document.getElementById('entryAlpName').value = entry.alp_name || '';
+                        document.getElementById('entryAlpHrms').value = entry.alp_hrms_id || '';
+                        document.getElementById('entryNcliAlp').value = entry.ncli_alp_name || '';
+                        openModal('entryModal');
+                    } else {
+                        showToast('Entry not found', 'error');
+                    }
+                } else {
+                    showToast(data.error || 'Failed to load entries', 'error');
+                }
+            } catch (e) {
+                console.error('Edit entry error:', e);
+                showToast('Failed to load entry', 'error');
+            }
+        }
+
+        async function saveEntry() {
+            const entryId = document.getElementById('editEntryId').value;
+            const payload = {
+                working_date: document.getElementById('entryDate').value,
+                rtis_status: document.getElementById('entryStatus').value,
+                train_number: document.getElementById('entryTrain').value.trim(),
+                loco_number: document.getElementById('entryLoco').value.trim(),
+                from_station: document.getElementById('entryFrom').value.trim(),
+                to_station: document.getElementById('entryTo').value.trim(),
+                lp_name: document.getElementById('entryLpName').value.trim(),
+                lp_hrms_id: document.getElementById('entryLpHrms').value.trim(),
+                ncli_name: document.getElementById('entryNcli').value.trim(),
+                alp_name: document.getElementById('entryAlpName').value.trim(),
+                alp_hrms_id: document.getElementById('entryAlpHrms').value.trim(),
+                ncli_alp_name: document.getElementById('entryNcliAlp').value.trim()
+            };
+
+            if (!payload.working_date || !payload.train_number || !payload.loco_number) {
+                showToast('Date, Train, and Loco are required', 'error');
+                return;
+            }
+
+            try {
+                const url = entryId ? `${API_BASE}/api/daily-entry/${entryId}` : `${API_BASE}/api/daily-entry`;
+                const method = entryId ? 'PUT' : 'POST';
+
+                const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    closeModal('entryModal');
+                    loadSummary();
+                } else {
+                    showToast(data.error, 'error');
+                }
+            } catch (e) {
+                showToast('Failed to save entry', 'error');
+            }
+        }
+
+        async function deleteEntry(entryId) {
+            if (!confirm('Delete this entry?')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/daily-entry/${entryId}`, { method: 'DELETE' });
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast('Entry deleted', 'success');
+                    loadSummary();
+                } else {
+                    showToast(data.error, 'error');
+                }
+            } catch (e) {
+                showToast('Failed to delete entry', 'error');
+            }
+        }
+
+        function exportCSV() {
+            if (!currentDate) return;
+            window.location.href = `${API_BASE}/api/export-daily-summary?date=${currentDate}`;
+        }
+
+        // Fetch train from/to stations
+        async function fetchTrainStations() {
+            const trainNum = document.getElementById('entryTrain').value.trim();
+            if (!trainNum) {
+                showToast('Enter train number first', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/train_info?train_number=${encodeURIComponent(trainNum)}`);
+                const data = await res.json();
+
+                if (res.ok && data.from_station) {
+                    document.getElementById('entryFrom').value = data.from_station || '';
+                    document.getElementById('entryTo').value = data.to_station || '';
+                    showToast('Stations loaded', 'success');
+                } else {
+                    showToast(data.error || 'Train not found', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to lookup train', 'error');
+            }
+        }
+
+        // Auto-fetch on Enter key in train field
+        document.getElementById('entryTrain').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                fetchTrainStations();
+            }
+        });
+
+        // Loco autocomplete
+        let locoTimeout = null;
+        document.getElementById('entryLoco').addEventListener('input', function() {
+            clearTimeout(locoTimeout);
+            const query = this.value.trim();
+            if (query.length < 2) return;
+
+            locoTimeout = setTimeout(async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/api/locos/search/${query}`);
+                    const data = await res.json();
+                    if (data.success) {
+                        const datalist = document.getElementById('locoList');
+                        datalist.innerHTML = data.locos.map(l =>
+                            `<option value="${l.loco_number}">${l.loco_number} (${l.current_shed})</option>`
+                        ).join('');
+                    }
+                } catch (e) {}
+            }, 300);
+        });
+
+        // LP Search & Resolve
+        let lpSearchTimeout = null;
+        let lpLabelToHrms = new Map();
+
+        function makeLpLabel(r) {
+            const cms = r.current_cms_id || 'CMS?';
+            return `${r.name} (${r.hrms_id}) — ${cms}`;
+        }
+
+        async function refreshLpDatalist(q) {
+            try {
+                const res = await fetch(`/api/division/rtis/lp-search?q=${encodeURIComponent(q || '')}`);
+                const data = await res.json();
+                if (!res.ok || !data.success) return;
+
+                const dl = document.getElementById('lpOptions');
+                dl.innerHTML = '';
+                lpLabelToHrms.clear();
+
+                (data.data || []).forEach(r => {
+                    const label = makeLpLabel(r);
+                    const opt = document.createElement('option');
+                    opt.value = label;
+                    dl.appendChild(opt);
+                    lpLabelToHrms.set(label, r.hrms_id);
+                });
+            } catch (e) {
+                console.warn('LP search failed', e);
+            }
+        }
+
+        async function resolveLp(hrms) {
+            try {
+                const res = await fetch(`/api/division/rtis/lp/${encodeURIComponent(hrms)}`);
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    console.warn('LP resolve failed', data);
+                    return;
+                }
+                const lp = data.data;
+                document.getElementById('entryLpHrms').value = lp.hrms_id || '';
+                document.getElementById('entryNcli').value = lp.cli_name || '';
+                document.getElementById('entryLpName').value = lp.name || '';
+            } catch (e) {
+                console.warn('LP resolve error', e);
+            }
+        }
+
+        document.getElementById('entryLpName').addEventListener('input', function(e) {
+            const val = e.target.value || '';
+
+            // Clear resolved values on typing
+            document.getElementById('entryLpHrms').value = '';
+            document.getElementById('entryNcli').value = '';
+
+            // Live search (debounced)
+            clearTimeout(lpSearchTimeout);
+            lpSearchTimeout = setTimeout(() => {
+                if (val.trim().length >= 2) refreshLpDatalist(val.trim());
+                else refreshLpDatalist('');
+            }, 250);
+
+            // If user picked an exact datalist option, resolve it
+            const hrms = lpLabelToHrms.get(val);
+            if (hrms) resolveLp(hrms);
+        });
+
+        // ALP Search & Resolve
+        let alpSearchTimeout = null;
+        let alpLabelToHrms = new Map();
+
+        function makeAlpLabel(r) {
+            const desig = r.designation_name || 'ALP';
+            if (r.current_cms_id) {
+                return `${r.name} (${r.hrms_id}) — ${r.current_cms_id} — ${desig}`;
+            }
+            return `${r.name} (${r.hrms_id}) — ${desig}`;
+        }
+
+        async function refreshAlpDatalist(q) {
+            try {
+                const res = await fetch(`${API_BASE}/alp-search?q=${encodeURIComponent(q || '')}`);
+                const data = await res.json();
+                if (!res.ok || !data.success) return;
+
+                const dl = document.getElementById('alpOptions');
+                dl.innerHTML = '';
+                alpLabelToHrms.clear();
+
+                (data.data || []).forEach(r => {
+                    const label = makeAlpLabel(r);
+                    const opt = document.createElement('option');
+                    opt.value = label;
+                    dl.appendChild(opt);
+                    alpLabelToHrms.set(label, r.hrms_id);
+                });
+            } catch (e) {
+                console.warn('ALP search failed', e);
+            }
+        }
+
+        async function resolveAlp(hrms) {
+            try {
+                const res = await fetch(`${API_BASE}/alp/${encodeURIComponent(hrms)}`);
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    console.warn('ALP resolve failed', data);
+                    return;
+                }
+                const alp = data.data;
+                document.getElementById('entryAlpHrms').value = alp.hrms_id || '';
+                document.getElementById('entryNcliAlp').value = alp.cli_name || '';
+                // Show name with CMS ID if available
+                document.getElementById('entryAlpName').value = alp.current_cms_id
+                    ? `${alp.name} (${alp.current_cms_id})`
+                    : alp.name;
+            } catch (e) {
+                console.warn('ALP resolve error', e);
+            }
+        }
+
+        document.getElementById('entryAlpName').addEventListener('input', function(e) {
+            const val = e.target.value || '';
+
+            // Clear resolved values on typing
+            document.getElementById('entryAlpHrms').value = '';
+            document.getElementById('entryNcliAlp').value = '';
+
+            // Live search (debounced)
+            clearTimeout(alpSearchTimeout);
+            alpSearchTimeout = setTimeout(() => {
+                if (val.trim().length >= 2) refreshAlpDatalist(val.trim());
+                else refreshAlpDatalist('');
+            }, 250);
+
+            // If user picked an exact datalist option, resolve it
+            const hrms = alpLabelToHrms.get(val);
+            if (hrms) resolveAlp(hrms);
+        });
+
+        function showToast(message, type = '') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => { toast.className = 'toast'; }, 3000);
+        }
+    </script>
+</body>
+</html>
