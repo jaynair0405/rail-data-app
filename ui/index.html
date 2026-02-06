@@ -470,6 +470,10 @@
         <div id="summaryLP">—</div>
       </div>
       <div class="summary-row">
+        <div>ALP</div>
+        <div id="summaryALP">—</div>
+      </div>
+      <div class="summary-row">
         <div>Train Number</div>
         <div id="summaryTrain">—</div>
       </div>
@@ -478,8 +482,12 @@
         <div id="summaryLoco">—</div>
       </div>
       <div class="summary-row">
-        <div>NCLI</div>
+        <div>NCLI (LP)</div>
         <div id="summaryNCLI">—</div>
+      </div>
+      <div class="summary-row">
+        <div>NCLI (ALP)</div>
+        <div id="summaryNCLIALP">—</div>
       </div>
       <div class="summary-row">
         <div>Analyzed By</div>
@@ -558,7 +566,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
 <script>
-const API = "/spm/rtis"; // same-origin
+const API = location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "" : "/spm/rtis";
 const STAFF = { lp: [], cli: [] };
 const NODE_DIV_API = ""; // same origin (bbtro)
 let __lpLabelToHrms = new Map();
@@ -579,6 +587,7 @@ const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b -
 
 function getCriteria(){
   return {
+    run_id: window.__currentRunId || undefined,
     direction_equals: window.__resolvedDirection || undefined,
     from_station_equals: document.getElementById("fromStation").value || undefined,
     to_station_equals: document.getElementById("toStation").value || undefined,
@@ -606,9 +615,11 @@ function fillSummary() {
   document.getElementById("summaryWorkingDate").textContent = workingDate ? formatDisplayDate(workingDate) : "—";
   document.getElementById("summarySection").textContent = from && to ? `${from} - ${to}` : "—";
   document.getElementById("summaryLP").textContent = document.getElementById("lpInput").value || "—";
+  document.getElementById("summaryALP").textContent = document.getElementById("alpInput").value || "—";
   document.getElementById("summaryTrain").textContent = document.getElementById("trainNumber").value || "—";
   document.getElementById("summaryLoco").textContent = document.getElementById("locoNumber").value || "—";
   document.getElementById("summaryNCLI").textContent = document.getElementById("ncliInput").value || "—";
+  document.getElementById("summaryNCLIALP").textContent = document.getElementById("ncliAlpInput").value || "—";
   document.getElementById("summaryAnalyst").textContent = document.getElementById("analystInput").value || "—";
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById("summaryAnalysisDate").textContent = formatDisplayDate(today);
@@ -1365,6 +1376,8 @@ document.getElementById("btnUpload").onclick = async () => {
   const r = await fetch(`${API}/load_csv`, { method:"POST", body: fd });
   const j = await r.json();
   if (r.ok) {
+    // Store run_id for subsequent API calls
+    window.__currentRunId = j.run_id;
     if (files.length > 1) {
       alert(`${files.length} CSV files merged and loaded (${j.rows} total rows, ${j.cols} cols)`);
     } else {
