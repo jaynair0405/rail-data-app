@@ -126,6 +126,23 @@
   input[readonly] {
     background: var(--brand-soft);
   }
+  .manual-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+    font-size: 0.8rem;
+    color: #666;
+  }
+  .manual-toggle input[type="checkbox"] {
+    width: auto;
+    padding: 0;
+    margin: 0;
+  }
+  input.manual-mode {
+    border-color: var(--accent);
+    background: #fffbe6;
+  }
   button {
     font: inherit;
     padding: 11px 22px;
@@ -382,6 +399,7 @@
   <input id="lpInput" list="lpOptions" placeholder="Start typing name" autocomplete="off" />
   <input type="hidden" id="lpHrmsId" />
   <input type="hidden" id="lpCliId" />
+  <span class="manual-toggle"><input type="checkbox" id="lpManual" /> <small>Other div.</small></span>
 </label>
 
 <label>NCLI
@@ -392,6 +410,7 @@
   <input id="alpInput" list="alpOptions" placeholder="Start typing name" autocomplete="off" />
   <input type="hidden" id="alpHrmsId" />
   <input type="hidden" id="alpCliId" />
+  <span class="manual-toggle"><input type="checkbox" id="alpManual" /> <small>Other div.</small></span>
 </label>
 
 <label>NCLI-ALP
@@ -582,6 +601,10 @@ let __lastPdfFilename = null;
 let __analysisCompleted = false;
 let __analysisSaved = false;
 
+// Manual entry mode for other division staff
+let __lpManualMode = false;
+let __alpManualMode = false;
+
 const BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20];
 const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
 
@@ -604,6 +627,8 @@ function getCriteria(){
     alp_name: document.getElementById("alpInput").value || undefined,
     ncli_alp_name: document.getElementById("ncliAlpInput").value || undefined,
     manual_override: window.__manualOverrideApplied || false,
+    lp_manual_entry: __lpManualMode,
+    alp_manual_entry: __alpManualMode,
   };
 }
 
@@ -667,6 +692,9 @@ clearLPResolved();
 lpInputEl.addEventListener("input", async (e) => {
   const val = e.target.value || "";
 
+  // Skip DB logic in manual mode
+  if (__lpManualMode) return;
+
   // Any typing invalidates selection until a valid option is chosen again
   clearLPResolved();
 
@@ -682,7 +710,7 @@ lpInputEl.addEventListener("input", async (e) => {
   const hrms = __lpLabelToHrms.get(val);
   if (!hrms) return;
 
-  const resp = await fetch(`/api/division/rtis/lp/${encodeURIComponent(hrms)}`);
+  const resp = await fetch(`${API}/lp/${encodeURIComponent(hrms)}`);
   const j = await resp.json();
   if (!resp.ok || !j.success) {
     alert(j.error || "LP resolve failed");
@@ -691,10 +719,6 @@ lpInputEl.addEventListener("input", async (e) => {
 
   // Store resolved staff snapshot
   setLPResolved(j.data);
-
-  // Optional: replace visible input with clean name (but keep strictness)
-  // If you prefer to keep full label, comment this line.
-  lpInputEl.value = j.data.name;
 });
 
 
@@ -719,7 +743,7 @@ function makeLpLabel(r) {
 }
 
 async function refreshLpDatalist(q) {
-  const url = `/api/division/rtis/lp-search?q=${encodeURIComponent(q || "")}`;
+  const url = `${API}/lp-search?q=${encodeURIComponent(q || "")}`;
   const resp = await fetch(url);
   const j = await resp.json();
 
@@ -746,6 +770,10 @@ function setLPResolved(lp) {
 
   document.getElementById("lpHrmsId").value = lp.hrms_id || "";
   document.getElementById("lpCliId").value = lp.current_cli_id || "";
+  // Set LP name in input (with CMS ID if available)
+  document.getElementById("lpInput").value = lp.current_cms_id
+    ? `${lp.name} (${lp.current_cms_id})`
+    : lp.name || "";
 
   // Lock NCLI from staff master
   document.getElementById("ncliInput").value = lp.cli_name || "";
@@ -776,10 +804,13 @@ function clearLPResolved() {
   document.getElementById("lpCliId").value = "";
   document.getElementById("ncliInput").value = "";
   document.getElementById("analystCliId").value = "";
-document.getElementById("analystInput").value = "";
+  document.getElementById("analystInput").value = "";
 
-  document.getElementById("btnAnalyze").disabled = true;
-  document.getElementById("btnExport").disabled = true;
+  // Only disable buttons if not in manual mode
+  if (!__lpManualMode) {
+    document.getElementById("btnAnalyze").disabled = true;
+    document.getElementById("btnExport").disabled = true;
+  }
 
   fillSummary();
 }
@@ -840,6 +871,9 @@ function clearALPResolved() {
 alpInputEl.addEventListener("input", async (e) => {
   const val = e.target.value || "";
 
+  // Skip DB logic in manual mode
+  if (__alpManualMode) return;
+
   // Any typing invalidates selection until a valid option is chosen again
   clearALPResolved();
 
@@ -870,6 +904,87 @@ alpInputEl.addEventListener("input", async (e) => {
 
 // Initialize ALP datalist on page load
 refreshAlpDatalist("");
+
+// ------------------------------
+// Manual Entry Toggle (Other Division Staff)
+// ------------------------------
+
+document.getElementById("lpManual").addEventListener("change", (e) => {
+  __lpManualMode = e.target.checked;
+  const input = document.getElementById("lpInput");
+
+  if (__lpManualMode) {
+    // Switch to manual mode
+    input.removeAttribute("list");
+    input.classList.add("manual-mode");
+    input.placeholder = "Enter name manually";
+    input.value = "";
+    document.getElementById("lpHrmsId").value = "";
+    document.getElementById("lpCliId").value = "";
+    document.getElementById("ncliInput").value = "(Other division)";
+    // Enable buttons in manual mode
+    updateButtonState();
+  } else {
+    // Switch back to DB mode
+    input.setAttribute("list", "lpOptions");
+    input.classList.remove("manual-mode");
+    input.placeholder = "Start typing name";
+    input.value = "";
+    document.getElementById("ncliInput").value = "";
+    clearLPResolved();
+  }
+  fillSummary();
+});
+
+document.getElementById("alpManual").addEventListener("change", (e) => {
+  __alpManualMode = e.target.checked;
+  const input = document.getElementById("alpInput");
+
+  if (__alpManualMode) {
+    // Switch to manual mode
+    input.removeAttribute("list");
+    input.classList.add("manual-mode");
+    input.placeholder = "Enter name manually";
+    input.value = "";
+    document.getElementById("alpHrmsId").value = "";
+    document.getElementById("alpCliId").value = "";
+    document.getElementById("ncliAlpInput").value = "(Other division)";
+  } else {
+    // Switch back to DB mode
+    input.setAttribute("list", "alpOptions");
+    input.classList.remove("manual-mode");
+    input.placeholder = "Start typing name";
+    input.value = "";
+    document.getElementById("ncliAlpInput").value = "";
+    clearALPResolved();
+  }
+  fillSummary();
+});
+
+// Update button state considering manual mode
+function updateButtonState() {
+  const lpOk = __lpManualMode
+    ? document.getElementById("lpInput").value.trim().length > 0
+    : (!!document.getElementById("lpHrmsId").value && !!document.getElementById("lpCliId").value);
+
+  document.getElementById("btnAnalyze").disabled = !lpOk;
+  document.getElementById("btnExport").disabled = !lpOk;
+}
+
+// Add input listener for manual mode LP field
+document.getElementById("lpInput").addEventListener("input", () => {
+  if (__lpManualMode) {
+    updateButtonState();
+    fillSummary();
+  }
+});
+
+// Add input listener for manual mode ALP field
+document.getElementById("alpInput").addEventListener("input", () => {
+  if (__alpManualMode) {
+    fillSummary();
+  }
+});
 
 function makeCliLabel(c) {
   const cms = c.cmsid ? c.cmsid : "CMS?";
@@ -1566,6 +1681,7 @@ async function analyzeAndPlot(){
   // Show Save Analysis button after successful analysis
   __analysisCompleted = true;
   __analysisSaved = false;
+  document.getElementById("btnExport").disabled = false;
   const saveBtn = document.getElementById("btnSaveAnalysis");
   saveBtn.style.display = "inline-block";
   saveBtn.style.opacity = "1";

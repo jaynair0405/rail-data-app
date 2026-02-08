@@ -1,13 +1,14 @@
-from fastapi import FastAPI, UploadFile, Body, Query
+from fastapi import FastAPI, UploadFile, Body, Query, Header
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi import Request, HTTPException
 from auth import get_current_user
 from db_config import get_db_connection
+import mysql.connector
 import polars as pl
 import pandas as pd
-import io, time, re, math, sys
-from typing import Dict, Any, List
+import io, time, re, math, sys, threading, uuid
+from typing import Dict, Any, List, Tuple
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -52,9 +53,73 @@ def root():
     return RedirectResponse(url="/spm/rtis/ui/")
 
 # ------------------------------
-# Global in-memory DF for analysis CSV
+# In-memory run storage (prevents cross-user clobbering)
 # ------------------------------
-DF: pl.DataFrame | None = None
+DF: pl.DataFrame | None = None  # legacy single-DF placeholder
+
+# Runs are keyed by run_id to allow multiple simultaneous uploads even if users share credentials.
+# Each run stores owning user_id for access control. TTL avoids unbounded memory growth.
+RUNS: Dict[str, Dict[str, Any]] = {}
+RUNS_LOCK = threading.Lock()
+RUN_TTL_SECONDS = 60 * 60 * 6  # 6 hours
+
+# Idempotency cache per user (keyed by Idempotency-Key header)
+IDEMPOTENCY_CACHE: Dict[Tuple[int, str], Dict[str, Any]] = {}
+
+
+def _purge_expired_runs() -> None:
+    now = time.time()
+    with RUNS_LOCK:
+        expired = [rid for rid, run in RUNS.items() if now - run.get("uploaded_at", 0) > RUN_TTL_SECONDS]
+        for rid in expired:
+            RUNS.pop(rid, None)
+        expired_keys = [
+            key for key, meta in IDEMPOTENCY_CACHE.items()
+            if now - meta.get("uploaded_at", 0) > RUN_TTL_SECONDS
+        ]
+        for key in expired_keys:
+            IDEMPOTENCY_CACHE.pop(key, None)
+
+
+def _set_user_run(run_id: str, user_id: int, df: pl.DataFrame | None, files: List[dict[str, Any]]) -> None:
+    # Store DF for a specific run; called after successful upload
+    _purge_expired_runs()
+    with RUNS_LOCK:
+        RUNS[run_id] = {
+            "df": df,
+            "uploaded_at": time.time(),
+            "files": files,
+            "user_id": user_id,
+            "run_id": run_id,
+        }
+
+
+def _get_user_run(request: Request, run_id: str | None) -> Tuple[dict, pl.DataFrame]:
+    """Return (user, df) for the current request, enforcing auth and run isolation."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required; call /load_csv first")
+
+    _purge_expired_runs()
+    with RUNS_LOCK:
+        run = RUNS.get(run_id)
+
+    if not run:
+        raise HTTPException(status_code=400, detail="no data loaded for this run_id")
+
+    # Enforce ownership if possible (still allows shared credential scenarios to be isolated per run)
+    owner_id = run.get("user_id")
+    if owner_id is not None and owner_id != user.get("id"):
+        raise HTTPException(status_code=403, detail="run_id does not belong to this user")
+
+    df = run.get("df")
+    if df is None:
+        raise HTTPException(status_code=400, detail="no data loaded for this run_id")
+
+    return user, df
 
 # ------------------------------
 # Base-Data: Trains (robust loader)
@@ -94,11 +159,11 @@ BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
 # Section breakdowns for sectional charts
 # Key = "FROM-TO", Value = list of stations for section boundaries
 SECTION_BREAKDOWN = {
-    "JL-CSMT": ["JL", "MMR", "IGP", "KSRA", "KYN", "CSMT"],
-    "MMR-CSMT": ["MMR", "IGP", "KSRA", "KYN", "CSMT"],
-    "IGP-CSMT": ["IGP", "KSRA", "KYN", "CSMT"],
-    "PUNE-CSMT": ["PUNE", "LNL", "KJT", "KYN", "CSMT"],       # Via Kalyan
-    "PUNE-CSMT-PNVL": ["PUNE", "LNL", "KJT", "PNVL", "CSMT"], # Via PNVL
+    "JL-CSMT": ["JL", "MMR", "IGP", "KSRA", "KYN", "DR", "CSMT"],
+    "MMR-CSMT": ["MMR", "IGP", "KSRA", "KYN", "DR", "CSMT"],
+    "IGP-CSMT": ["IGP", "KSRA", "KYN", "DR", "CSMT"],
+    "PUNE-CSMT": ["PUNE", "LNL", "KJT", "KYN", "DR", "CSMT"],       # Via Kalyan
+    "PUNE-CSMT-PNVL": ["PUNE", "LNL", "KJT", "PNVL", "DR", "CSMT"], # Via PNVL
     "RN-CSMT": ["RN", "CHI", "ROHA", "PNVL", "CSMT"],
     "ROHA-CSMT": ["ROHA", "PNVL", "CSMT"],
     "RN-BSR": ["RN", "ROHA", "PNVL", "BSR"],
@@ -115,6 +180,9 @@ SECTION_BREAKDOWN = {
     "LTT-IGP": ["LTT", "KYN", "KSRA", "IGP"],
     "LTT-RN": ["LTT", "DIVA", "PNVL", "ROHA", "CHI", "RN"],
     "RN-LTT": ["RN", "CHI", "ROHA", "PNVL", "DIVA", "LTT"],
+    # MEMU routes (BSR-DIVA)
+    "DIVA-BSR": ["DIVA", "KOPR", "BSR"],
+    "BSR-DIVA": ["BSR", "KOPR", "DIVA"],
 }
 
 MAIL_STAFF: list[dict[str, Any]] = []
@@ -122,6 +190,7 @@ CLI_STAFF: list[dict[str, Any]] = []
 
 MPS_CONFIG: dict[str, float] = {
     # DN (CSMT → PUNE)
+    "DR-KYN": 105.0,
     "CSMT-KYN": 105.0,
     "KYN-KJT": 105.0,
     "KJT-PDI": 80.0,
@@ -132,6 +201,7 @@ MPS_CONFIG: dict[str, float] = {
     "LNL-PDI": 60.0,
     "PDI-KJT": 80.0,
     "KJT-KYN": 105.0,
+    "KYN-DR": 105.0,
     "KYN-CSMT": 105.0,
     # DN (CSMT → JL)
     "KYN-KSRA": 105.0,
@@ -177,22 +247,26 @@ MPS_CONFIG: dict[str, float] = {
     # UP (JL → PNVL)
     "KYN-DTVL": 105.0,
     "DTVL-PNVL": 110.0,
+    # DIVA-BSR (MEMU sections)
+    "DIVA-KOPR": 105.0,
+    "KOPR-DIVA": 105.0,
+    "KOPR-BSR": 110.0,
+    "BSR-KOPR": 110.0,
 }
 
 ROUTE_SECTION_MAP: dict[tuple[str, str], list[list[str]]] = {
     ("CSMT-PUNE", "DN"): [
-        ["CSMT-KYN", "KYN-KJT", "KJT-PDI", "PDI-LNL", "LNL-PUNE"],
+        ["CSMT-DR", "DR-KYN", "KYN-KJT", "KJT-PDI", "PDI-LNL", "LNL-PUNE"],
         ["CSMT-DIVA", "DIVA-PNVL", "PNVL-KJT", "KJT-PDI", "PDI-LNL", "LNL-PUNE"],
-        
     ],
     ("PUNE-CSMT", "UP"): [
-        ["PUNE-LNL", "LNL-PDI", "PDI-KJT", "KJT-KYN", "KYN-CSMT"],
+        ["PUNE-LNL", "LNL-PDI", "PDI-KJT", "KJT-KYN", "KYN-DR", "DR-CSMT"],
         ["PUNE-LNL", "LNL-PDI", "PDI-KJT", "KJT-PNVL", "PNVL-DIVA", "DIVA-CSMT"],
     ],
-    ("CSMT-JL", "DN"): [["CSMT-KYN", "KYN-KSRA", "KSRA-IGP", "IGP-JL"]],
-    ("JL-CSMT", "UP"): [["JL-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-CSMT"]],
-    ("CSMT-IGP", "DN"): [["CSMT-KYN", "KYN-KSRA", "KSRA-IGP"]],
-    ("IGP-CSMT", "UP"): [["IGP-KSRA", "KSRA-KYN", "KYN-CSMT"]],
+    ("CSMT-JL", "DN"): [["CSMT-DR", "DR-KYN", "KYN-KSRA", "KSRA-IGP", "IGP-JL"]],
+    ("JL-CSMT", "UP"): [["JL-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-DR", "DR-CSMT"]],
+    ("CSMT-IGP", "DN"): [["CSMT-DR", "DR-KYN", "KYN-KSRA", "KSRA-IGP"]],
+    ("IGP-CSMT", "UP"): [["IGP-KSRA", "KSRA-KYN", "KYN-DR", "DR-CSMT"]],
     ("CSMT-RN", "DN"): [["CSMT-DR", "DR-TNA", "TNA-DIVA", "DIVA-PNVL", "PNVL-ROHA", "ROHA-CHI", "CHI-RN"]],
     ("RN-CSMT", "UP"): [["RN-CHI", "CHI-ROHA", "ROHA-PNVL", "PNVL-DIVA", "DIVA-TNA", "TNA-DR", "DR-CSMT"]],
     ("LTT-PUNE", "DN"): [
@@ -210,8 +284,11 @@ ROUTE_SECTION_MAP: dict[tuple[str, str], list[list[str]]] = {
     ("JL-LTT", "UP"): [["JL-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-LTT"]],
     ("LTT-RN", "DN"): [["LTT-DIVA", "DIVA-PNVL", "PNVL-ROHA", "ROHA-CHI", "CHI-RN"]],
     ("RN-LTT", "UP"): [["RN-CHI", "CHI-ROHA", "ROHA-PNVL", "PNVL-DIVA", "DIVA-LTT"]],
-    ("CSMT-MMR", "DN"): [["CSMT-KYN", "KYN-KSRA", "KSRA-IGP", "IGP-MMR"]],
-    ("MMR-CSMT", "UP"): [["MMR-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-CSMT"]],
+    ("CSMT-MMR", "DN"): [["CSMT-DR", "DR-KYN", "KYN-KSRA", "KSRA-IGP", "IGP-MMR"]],
+    ("MMR-CSMT", "UP"): [["MMR-IGP", "IGP-KSRA", "KSRA-KYN", "KYN-DR", "DR-CSMT"]],
+    # MEMU routes (BSR-DIVA)
+    ("DIVA-BSR", "DN"): [["DIVA-KOPR", "KOPR-BSR"]],
+    ("BSR-DIVA", "UP"): [["BSR-KOPR", "KOPR-DIVA"]],
 }
 
 def _find_base_csv(prefix: str) -> Path | None:
@@ -552,11 +629,32 @@ def health():
 # Upload & Preview
 # ------------------------------
 @app.post("/load_csv")
-async def load_csv(files: List[UploadFile]):
+async def load_csv(
+    request: Request,
+    files: List[UploadFile],
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """Upload and load analysis CSV (large run file). Supports multiple files for overnight journeys."""
     global DF
 
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+    # Generate run_id up front so it can be reused for idempotent retries
+    run_id = f"run_{uuid.uuid4().hex[:12]}"
+
+    # Fast path: return cached response if idempotency key matches an existing upload for this user
+    cache_key = (user.get("id"), idempotency_key) if idempotency_key else None
+    if cache_key:
+        _purge_expired_runs()
+        with RUNS_LOCK:
+            cached = IDEMPOTENCY_CACHE.get(cache_key)
+        if cached:
+            return cached["response"]
+
     if not files or len(files) == 0:
+        _set_user_run(run_id, user.get("id"), None, [])
         DF = None
         return JSONResponse({"error": "no files uploaded"}, status_code=400)
 
@@ -607,6 +705,7 @@ async def load_csv(files: List[UploadFile]):
         })
 
     if not file_info:
+        _set_user_run(run_id, user.get("id"), None, [])
         DF = None
         return JSONResponse({"error": "no valid data in uploaded files"}, status_code=400)
 
@@ -630,12 +729,12 @@ async def load_csv(files: List[UploadFile]):
 
     # Concatenate DataFrames
     if len(file_info) == 1:
-        DF = file_info[0]["df"]
+        df = file_info[0]["df"]
     else:
-        DF = pl.concat([info["df"] for info in file_info], how="vertical")
+        df = pl.concat([info["df"] for info in file_info], how="vertical")
 
     # Apply standard processing
-    DF = _repair_shifted_rows(DF)
+    df = _repair_shifted_rows(df)
     drop_cols = [
         "BE Version",
         "GUI Version",
@@ -643,23 +742,42 @@ async def load_csv(files: List[UploadFile]):
         "DB Circle Count",
         "DB Polygon Count",
     ]
-    keep = [c for c in DF.columns if c not in drop_cols]
-    DF = DF.select(keep)
+    keep = [c for c in df.columns if c not in drop_cols]
+    df = df.select(keep)
 
-    return {
-        "rows": DF.height,
-        "cols": DF.width,
-        "columns": DF.columns,
+    # Store per-user run to avoid cross-user clobbering
+    _set_user_run(run_id, user.get("id"), df, file_info)
+    DF = df  # legacy fallback; remove after full refactor
+
+    response = {
+        "run_id": run_id,
+        "rows": df.height,
+        "cols": df.width,
+        "columns": df.columns,
         "files_merged": len(file_info),
         "file_details": [{"filename": info["filename"], "rows": info["rows"]} for info in file_info]
     }
+    if cache_key:
+        with RUNS_LOCK:
+            IDEMPOTENCY_CACHE[cache_key] = {"response": response, "uploaded_at": time.time()}
+
+    return response
+
+
+def _resolve_run_id(run_id_param: str | None, body: Dict[str, Any] | None = None) -> str:
+    rid = run_id_param or (body or {}).get("run_id")
+    if not rid:
+        raise HTTPException(status_code=400, detail="run_id is required; call /load_csv first")
+    return str(rid)
 
 
 @app.get("/preview")
-def preview(n: int = 20):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    return {"data": DF.head(n).to_dicts()}
+def preview(request: Request, n: int = 20, run_id: str | None = Query(None)):
+    try:
+        _, df = _get_user_run(request, _resolve_run_id(run_id))
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    return {"data": df.head(n).to_dicts()}
 
 
 def _first_matching_column(columns: list[str], *keywords: str) -> str | None:
@@ -931,6 +1049,8 @@ def _find_geofence_start_idx(
     lat_col = _first_matching_column(df.columns, "LAT", "ITUDE") or _first_matching_column(df.columns, "LAT")
     lon_col = _first_matching_column(df.columns, "LON", "ITUDE") or _first_matching_column(df.columns, "LON")
     station_col = _first_matching_column(df.columns, "STATION", "CODE") or _first_matching_column(df.columns, "STATION")
+    to_station_norm = to_station.strip().upper() if to_station else None
+    MIN_START_SPEED = 0.5  # ignore GPS noise spikes when building departure candidates
 
     if not speed_col or not lat_col or not lon_col:
         return None
@@ -986,7 +1106,7 @@ def _find_geofence_start_idx(
         sp_next = speeds_next[i]
         if sp is None or sp_next is None:
             continue
-        if sp < 1 and sp_next > 0:
+        if sp < 1 and sp_next > MIN_START_SPEED:
             inside, _ = _within_geofence(lats[i], lons[i], geos)
             if inside:
                 next_idx = idxs[i] + 1 if i + 1 < len(idxs) else idxs[i]
@@ -994,6 +1114,13 @@ def _find_geofence_start_idx(
 
     if not candidates:
         return None
+
+    # Hard cap to avoid O(n^2) behavior on noisy yard data (keeps latest movements)
+    MAX_CANDIDATES = 300
+    if len(candidates) > MAX_CANDIDATES:
+        original_len = len(candidates)
+        candidates = candidates[-MAX_CANDIDATES:]
+        print(f"[DEBUG] Candidate cap applied, keeping last {MAX_CANDIDATES} of {original_len}")
 
     print(f"[DEBUG] Found {len(candidates)} raw candidates at {station_code}")
 
@@ -1124,12 +1251,35 @@ def _find_geofence_start_idx(
         else:
             print(f"[DEBUG] No route graph found for {route_key}, skipping membership filter")
 
+    # Precompute destination presence once (avoid per-candidate frame scans)
+    dest_last_idx = None
+    if to_station_norm and station_col:
+        dest_last_idx = _find_station_row_idx(df, station_col, to_station_norm, first=False)
+    dest_ge_end_idx = None
+    if to_station_norm:
+        dest_ge_end_idx = _find_geofence_end_idx(df, to_station_norm, direction, start_after=None)
+
+    # Helper: ensure destination exists after the candidate (prevents picking reverse-leg starts)
+    def _destination_exists_after(candidate_idx: int) -> bool:
+        if not to_station_norm:
+            return True
+        if dest_ge_end_idx is not None and dest_ge_end_idx > candidate_idx:
+            return True
+        if dest_last_idx is not None and dest_last_idx > candidate_idx:
+            return True
+        return False
+
     # Validate each candidate - collect all valid ones, then return the LAST
     # (for terminal-starting trains like DR, the actual departure is usually the last one
     # as earlier candidates may be from different journeys in the same CSV)
     valid_candidates = []
+    dest_candidates = []
 
     for candidate_idx in candidates:
+        if not _destination_exists_after(candidate_idx):
+            print(f"[DEBUG] Candidate {candidate_idx}: destination {to_station_norm} not found after candidate, skipping")
+            continue
+        dest_candidates.append(candidate_idx)
         # Primary: Station sequence validation (if data is good)
         if station_data_good and expected_sequence and station_col:
             is_valid = _validate_station_sequence(
@@ -1160,6 +1310,10 @@ def _find_geofence_start_idx(
     if valid_candidates:
         print(f"[DEBUG] Found {len(valid_candidates)} valid candidates, returning last: {valid_candidates[-1]}")
         return valid_candidates[-1]
+
+    if dest_candidates:
+        print(f"[DEBUG] No validated candidates, but {len(dest_candidates)} have destination ahead; returning last: {dest_candidates[-1]}")
+        return dest_candidates[-1]
 
     # If no candidates passed validation, return last from all candidates
     print(f"[DEBUG] No candidates passed validation, returning last: {candidates[-1] if candidates else None}")
@@ -1421,10 +1575,13 @@ def apply_criteria(df: pl.DataFrame, crit: Dict[str, Any]) -> pl.DataFrame:
 
 
 @app.post("/analyze")
-def analyze(criteria: Dict[str, Any] = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    filtered = apply_criteria(DF, criteria)
+def analyze(request: Request, criteria: Dict[str, Any] = Body(...), run_id: str | None = Query(None)):
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    filtered = apply_criteria(df, criteria)
     return {"rows": filtered.height, "sample": filtered.head(50).to_dicts()}
 
 
@@ -1432,10 +1589,13 @@ def analyze(criteria: Dict[str, Any] = Body(...)):
 # Excel Export
 # ------------------------------
 @app.post("/export")
-def export(criteria: dict = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    out = apply_criteria(DF, criteria)
+def export(request: Request, criteria: dict = Body(...), run_id: str | None = Query(None)):
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    out = apply_criteria(df, criteria)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         out.to_pandas().to_excel(writer, index=False, sheet_name="Filtered")
@@ -1671,10 +1831,13 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
 
 
 @app.post("/chart_data")
-def chart_data(criteria: dict = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    out = apply_criteria(DF, criteria)
+def chart_data(request: Request, criteria: dict = Body(...), run_id: str | None = Query(None)):
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    out = apply_criteria(df, criteria)
     try:
         payload = _build_chart_payload(out, criteria)
     except ValueError as exc:
@@ -1682,10 +1845,14 @@ def chart_data(criteria: dict = Body(...)):
     return payload
 
 @app.post("/braking_profile")
-def braking_profile(criteria: dict = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    filtered = apply_criteria(DF, criteria)
+def braking_profile(request: Request, criteria: dict = Body(...), run_id: str | None = Query(None)):
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    filtered = apply_criteria(df, criteria)
     analysis_offsets = list(BRAKE_OFFSETS)
     extras: list[int] = []
     if 500 not in analysis_offsets:
@@ -1742,11 +1909,14 @@ def braking_profile(criteria: dict = Body(...)):
 
 
 @app.post("/brake_tests")
-def brake_tests(criteria: dict = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
+def brake_tests(request: Request, criteria: dict = Body(...), run_id: str | None = Query(None)):
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
 
-    filtered = apply_criteria(DF, criteria)
+    filtered = apply_criteria(df, criteria)
     start_station = criteria.get("from_station_equals")
     direction = criteria.get("direction_equals")
     summary = _brake_tests(filtered, start_station, direction)
@@ -2038,7 +2208,9 @@ def _build_summary_details(dataset: pl.DataFrame, criteria: dict) -> dict[str, A
         "loco_number": criteria.get("loco_number"),
         "coach_type": criteria.get("coach_type"),
         "lp_name": criteria.get("lp_name"),
+        "alp_name": criteria.get("alp_name"),
         "ncli_name": criteria.get("ncli_name"),
+        "ncli_alp_name": criteria.get("ncli_alp_name"),
         "analyst_name": criteria.get("analyst_name"),
         "from_station": criteria.get("from_station_equals"),
         "to_station": criteria.get("to_station_equals"),
@@ -2195,7 +2367,9 @@ def _render_pdf_report(
         ["Loco Number", summary.get("loco_number") or "-"],
         ["Coach Type", summary.get("coach_type") or "-"],
         ["LP", summary.get("lp_name") or "-"],
-        ["NCLI", summary.get("ncli_name") or "-"],
+        ["ALP", summary.get("alp_name") or "-"],
+        ["NCLI (LP)", summary.get("ncli_name") or "-"],
+        ["NCLI (ALP)", summary.get("ncli_alp_name") or "-"],
         ["Analyzed By", summary.get("analyst_name") or "-"],
         ["Rows Analyzed", str(summary.get("row_count") or 0)],
         ["Start Time", summary.get("start_time") or "-"],
@@ -2475,10 +2649,14 @@ def _generate_pdf_filename(filtered_df: pl.DataFrame, criteria: dict) -> str:
 
 
 @app.post("/export_pdf")
-def export_pdf(criteria: dict = Body(...)):
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
-    filtered = apply_criteria(DF, criteria)
+def export_pdf(request: Request, criteria: dict = Body(...), run_id: str | None = Query(None)):
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+    filtered = apply_criteria(df, criteria)
     if filtered.height == 0:
         return JSONResponse({"error": "no data matches the selected criteria"}, status_code=400)
     try:
@@ -2569,14 +2747,17 @@ def get_all_stations():
 
 
 @app.post("/validate_route")
-def validate_route(criteria: Dict[str, Any] = Body(...)):
+def validate_route(request: Request, criteria: Dict[str, Any] = Body(...), run_id: str | None = Query(None)):
     """
     Validate route selection after geofence slicing.
     Provides immediate feedback before analysis.
     Does NOT validate entire CSV direction (preserves multi-direction CSV handling).
     """
-    if DF is None:
-        return JSONResponse({"error": "no data loaded"}, status_code=400)
+    try:
+        run_id_val = _resolve_run_id(run_id, criteria)
+        _, df = _get_user_run(request, run_id_val)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
 
     from_station = criteria.get("from_station_equals")
     to_station = criteria.get("to_station_equals")
@@ -2590,7 +2771,7 @@ def validate_route(criteria: Dict[str, Any] = Body(...)):
 
     # Apply geofence slicing (current smart logic - handles multi-direction CSVs)
     try:
-        sliced = apply_criteria(DF, criteria)
+        sliced = apply_criteria(df, criteria)
     except Exception as e:
         return JSONResponse({
             "valid": False,
@@ -2871,12 +3052,19 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Compute BFT/BPT status from brake tests
+        # Compute BFT/BPT status from brake tests (per-run DF)
         bft_status = 'NOT RUN'
         bpt_status = 'NOT RUN'
-        if DF is not None and not DF.is_empty():
+        user_df = None
+        try:
+            run_id_val = _resolve_run_id(None, data)
+            _, user_df = _get_user_run(request, run_id_val)
+        except HTTPException:
+            pass
+
+        if user_df is not None and not user_df.is_empty():
             try:
-                filtered = apply_criteria(DF, criteria)
+                filtered = apply_criteria(user_df, criteria)
                 if filtered.height > 0:
                     start_station = criteria.get("from_station_equals")
                     direction = criteria.get("direction_equals")
@@ -2966,12 +3154,12 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         # Get the inserted ID
         analysis_id = cursor.lastrowid
 
-        # Detect and save violations if DF is loaded
+        # Detect and save violations if DF is loaded (per-run)
         violations_saved = 0
-        if DF is not None and not DF.is_empty():
+        if user_df is not None and not user_df.is_empty():
             try:
                 # Compute braking profile
-                filtered = apply_criteria(DF, criteria)
+                filtered = apply_criteria(user_df, criteria)
                 if filtered.height > 0:
                     halts = _braking_profile(filtered, BRAKE_OFFSETS)
                     violations = _detect_violations(filtered, halts, criteria)
@@ -3025,6 +3213,21 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
             "violations_saved": violations_saved
         }
 
+    except mysql.connector.IntegrityError as e:
+        # Duplicate key error (error code 1062)
+        if e.errno == 1062:
+            return JSONResponse(
+                {
+                    "error": "Analysis already exists for this trip (same date, train, route, and loco). Use update instead.",
+                    "success": False,
+                    "duplicate": True
+                },
+                status_code=409
+            )
+        return JSONResponse(
+            {"error": f"Database integrity error: {str(e)}", "success": False},
+            status_code=400
+        )
     except Exception as e:
         return JSONResponse(
             {"error": f"Failed to save analysis: {str(e)}", "success": False},
@@ -3243,6 +3446,93 @@ async def get_alp_by_hrms(hrms_id: str):
 
         if not result:
             return JSONResponse({"success": False, "error": "ALP not found"}, status_code=404)
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ------------------------------
+# LP Search & Resolve endpoints
+# ------------------------------
+@app.get("/lp-search")
+async def lp_search(q: str = Query(default="")):
+    """Search LP/Sr.LP staff by name (designation_id IN (3, 4))"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        search_term = f"%{q.strip()}%" if q.strip() else "%"
+
+        query = """
+            SELECT
+                s.hrms_id,
+                s.name,
+                s.current_cms_id,
+                s.current_cli_id,
+                c.cli_name,
+                d.designation_name
+            FROM div_staff_master s
+            LEFT JOIN div_cli_master c ON s.current_cli_id = c.cli_id
+            LEFT JOIN designations d ON s.designation_id = d.id
+            WHERE s.designation_id IN (3, 4)
+              AND s.status = 'Active'
+              AND s.current_office_code = 'CSMT-ML'
+              AND s.name LIKE %s
+            ORDER BY s.name
+            LIMIT 50
+        """
+
+        cursor.execute(query, (search_term,))
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "data": results}
+
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/lp/{hrms_id}")
+async def get_lp_by_hrms(hrms_id: str):
+    """Get LP details by HRMS ID including CLI info"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return JSONResponse({"success": False, "error": "Database connection failed"}, status_code=500)
+
+        cursor = conn.cursor(dictionary=True)
+
+        query = """
+            SELECT
+                s.hrms_id,
+                s.name,
+                s.current_cms_id,
+                s.current_cli_id,
+                c.cli_name,
+                d.designation_name
+            FROM div_staff_master s
+            LEFT JOIN div_cli_master c ON s.current_cli_id = c.cli_id
+            LEFT JOIN designations d ON s.designation_id = d.id
+            WHERE s.hrms_id = %s
+              AND s.designation_id IN (3, 4)
+            LIMIT 1
+        """
+
+        cursor.execute(query, (hrms_id,))
+        result = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not result:
+            return JSONResponse({"success": False, "error": "LP not found"}, status_code=404)
 
         return {"success": True, "data": result}
 
@@ -4889,10 +5179,20 @@ def _compute_ghat_section_halts(
         # Ensure start_row < end_row for range checking
         min_row, max_row = min(start_row, end_row), max(start_row, end_row)
 
-        # Find halts that are between these row indices
+        # Normalize start station for comparison
+        start_station_norm = start_station.strip().upper()
+
+        # Find halts that are AFTER the start station (descent begins after IGP/LNL)
+        # Exclude the start station itself - ghat speed restriction applies during descent only
         for idx, halt in enumerate(halts):
             halt_row = halt.get("index", 0)
-            if min_row <= halt_row <= max_row:
+            halt_station = (halt.get("station") or "").strip().upper()
+
+            # Exclude if halt is at the ghat start station (IGP/LNL)
+            if halt_station == start_station_norm:
+                continue
+
+            if min_row < halt_row <= max_row:
                 ghat_halt_indices.add(idx)
 
     return ghat_halt_indices

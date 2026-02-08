@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS div_rtis_analyses (
     INDEX idx_from_to (from_station, to_station),
     INDEX idx_created_at (created_at),
 
+    -- Unique constraint for race protection (one analysis per trip)
+    CONSTRAINT uniq_analysis_trip
+        UNIQUE (working_date, train_number, from_station, to_station, direction, route, loco_number),
+
     -- Foreign Key Constraint
     CONSTRAINT fk_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 

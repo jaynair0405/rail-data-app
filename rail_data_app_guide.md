@@ -61,8 +61,84 @@ Current behavior highlights:
 - `/braking_profile` analyses each halt between the selected start/end stations, skips duplicate halts closer than 200 m, and reports approach speeds 1000/400/300/200/100/50/20 m before every stop. The UI renders this both as a “Braking Pattern Analysis” table and a companion multi-series braking curve so reviewers can visualize how each driver eased into every halt.
 - `/brake_tests` inspects the departure segment for each run and flags Brake Feel (Pune: 7–16 km/h, others: 10–16 km/h) and Brake Power (MMR: 45–100 km/h, others: 45–70 km/h) events, requiring ≥45 % speed drop within the origin geofence. Results feed a compact PASS/FAIL table beneath the braking charts.
 - `/debug/base_data` exposes the loader status, while `/train_info` is used by the UI before running analysis.
+- **Run isolation + idempotent uploads (Feb 2026)**
+  - `/load_csv` returns a `run_id` (UUID-based). All downstream endpoints must receive this `run_id` (query `?run_id=` or inside the JSON body) to select the correct in-memory DF; this prevents cross-user clobbering and allows multiple runs per shared login.
+  - Optional `Idempotency-Key` header makes retries safe: same user + same key returns the cached `run_id`/response without reprocessing; use a new key for a new upload.
+  - Run data lives in-memory per server process with a 6h TTL. Multi-worker deployments need a shared store (e.g., Redis/DB) if you want run_ids to be visible across workers.
 
 Refer to `app.py` for the full FastAPI implementation; it now weighs in at ~1100 lines with the geofence helpers, CSV cleaning utilities, and intelligent route selection logic.
+
+### Database race protection (recommended changes)
+
+**Business key**
+- Use `(working_date, train_number, from_station, to_station, direction, route, loco_number)` to uniquely identify one analysis. If you prefer “one per trip regardless of loco,” drop `loco_number` from the key.
+
+**Add a UNIQUE constraint**
+```sql
+ALTER TABLE div_rtis_analyses
+  ADD CONSTRAINT uniq_analysis_trip
+  UNIQUE (working_date, train_number, from_station, to_station, direction, route, loco_number);
+```
+- Collisions now fail fast with a duplicate-key error instead of creating duplicates.
+
+**Upsert instead of plain INSERT**
+```sql
+INSERT INTO div_rtis_analyses (
+  user_id, lp_hrms_id, lp_name, ncli_id, ncli_name,
+  alp_hrms_id, alp_name, ncli_alp_name,
+  analyst_id, analyst_name, analysis_date, working_date,
+  train_number, from_station, to_station, direction, route,
+  loco_number, coach_type, load_type, brake_position,
+  csv_filename, csv_file_size, pdf_filename,
+  total_distance, total_duration, max_speed, avg_speed,
+  halt_count, braking_events_count, notes, metadata,
+  bft_status, bpt_status
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON DUPLICATE KEY UPDATE
+  lp_hrms_id = VALUES(lp_hrms_id),
+  lp_name = VALUES(lp_name),
+  ncli_id = VALUES(ncli_id),
+  ncli_name = VALUES(ncli_name),
+  alp_hrms_id = VALUES(alp_hrms_id),
+  alp_name = VALUES(alp_name),
+  ncli_alp_name = VALUES(ncli_alp_name),
+  analyst_id = VALUES(analyst_id),
+  analyst_name = VALUES(analyst_name),
+  analysis_date = VALUES(analysis_date),
+  coach_type = VALUES(coach_type),
+  load_type = VALUES(load_type),
+  brake_position = VALUES(brake_position),
+  csv_filename = VALUES(csv_filename),
+  csv_file_size = VALUES(csv_file_size),
+  pdf_filename = VALUES(pdf_filename),
+  total_distance = VALUES(total_distance),
+  total_duration = VALUES(total_duration),
+  max_speed = VALUES(max_speed),
+  avg_speed = VALUES(avg_speed),
+  halt_count = VALUES(halt_count),
+  braking_events_count = VALUES(braking_events_count),
+  notes = VALUES(notes),
+  metadata = VALUES(metadata),
+  bft_status = VALUES(bft_status),
+  bpt_status = VALUES(bpt_status),
+  updated_at = CURRENT_TIMESTAMP;
+```
+- First submit inserts; a concurrent duplicate updates the same row.
+
+**Parent + child (violations) transaction**
+1) Begin transaction.
+2) Upsert parent; capture `LAST_INSERT_ID()` (returns existing id on the duplicate path).
+3) Delete-or-upsert child rows for that `analysis_id` (e.g., by `analysis_id + violation_type + halt_station`).
+4) Commit. This keeps parent and children consistent under concurrency.
+
+**Optional DB idempotency**
+- Table `idempotency_keys(key varchar(64) primary key, user_id int, target_table varchar(50), target_id int, created_at timestamp default current_timestamp)`.
+- On requests with `Idempotency-Key`, check this table in the same transaction; if present, return stored `target_id`, else insert after the upsert. Protects retries across multiple app processes.
+
+**Operational notes**
+- The UNIQUE creates the needed index; keep existing indexes on `analysis_date`, `working_date`, `train_number`, etc.
+- Small DB pool (5–10) with short connect/read timeouts to avoid lock pileups.
+- On duplicate-key hit, return 409/400 with a friendly “analysis already exists” message so the UI can explain the outcome.
 
 ### Data cleaning & alignment
 1. **Null token handling**: `pl.read_csv` maps `NULL/Null/null` (and similar future tokens) to proper nulls so numeric casts succeed.
