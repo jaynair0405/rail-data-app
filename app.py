@@ -3536,7 +3536,7 @@ async def lp_search(q: str = Query(default="")):
             FROM div_staff_master s
             LEFT JOIN div_cli_master c ON s.current_cli_id = c.cli_id
             LEFT JOIN designations d ON s.designation_id = d.id
-            WHERE s.designation_id IN (3, 4)
+            WHERE s.designation_id IN (5, 6, 7, 8)
               AND s.status = 'Active'
               AND s.current_office_code = 'CSMT-ML'
               AND s.name LIKE %s
@@ -3578,7 +3578,7 @@ async def get_lp_by_hrms(hrms_id: str):
             LEFT JOIN div_cli_master c ON s.current_cli_id = c.cli_id
             LEFT JOIN designations d ON s.designation_id = d.id
             WHERE s.hrms_id = %s
-              AND s.designation_id IN (3, 4)
+              AND s.designation_id IN (5, 6, 7, 8)
             LIMIT 1
         """
 
