@@ -3001,6 +3001,7 @@ async def check_analysis_exists(request: Request, data: Dict[str, Any] = Body(..
 # ------------------------------
 @app.post("/api/save-analysis")
 async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
+    print("####SAVE_ANALYSIS#### CALLED")
     """
     Save analysis record to div_rtis_analyses table.
     Requires authenticated user session.
@@ -3041,6 +3042,23 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         notes = data.get("notes")
         metadata = data.get("metadata")
 
+        # Convert working_date from DD-MM-YYYY to YYYY-MM-DD for MySQL
+        working_date_raw = criteria.get("working_date")
+        working_date_sql = None
+        if working_date_raw:
+            try:
+                # Try DD-MM-YYYY format first
+                parsed = datetime.strptime(working_date_raw, "%d-%m-%Y")
+                working_date_sql = parsed.strftime("%Y-%m-%d")
+            except ValueError:
+                try:
+                    # Try DD/MM/YYYY format
+                    parsed = datetime.strptime(working_date_raw, "%d/%m/%Y")
+                    working_date_sql = parsed.strftime("%Y-%m-%d")
+                except ValueError:
+                    # Already in correct format or other format, use as-is
+                    working_date_sql = working_date_raw
+
         # Validate required fields
         if not csv_filename:
             return JSONResponse(
@@ -3057,10 +3075,15 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         bpt_status = 'NOT RUN'
         user_df = None
         try:
+            print(f"####BRAKING#### data.get('run_id')={data.get('run_id')}")
             run_id_val = _resolve_run_id(None, data)
+            print(f"####BRAKING#### run_id_val={run_id_val}")
             _, user_df = _get_user_run(request, run_id_val)
-        except HTTPException:
-            pass
+            print(f"####BRAKING#### Got user_df with {user_df.height if user_df is not None else 0} rows")
+        except HTTPException as e:
+            print(f"####BRAKING#### HTTPException getting user_df: {e.detail}")
+        except Exception as e:
+            print(f"####BRAKING#### Exception getting user_df: {e}")
 
         if user_df is not None and not user_df.is_empty():
             try:
@@ -3122,7 +3145,7 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
             criteria.get("analyst_cli_id"),  # analyst_id
             criteria.get("analyst_name"),
             datetime.now().date(),  # analysis_date
-            criteria.get("working_date"),  # Can be None
+            working_date_sql,  # Converted to YYYY-MM-DD format
             criteria.get("train_number"),
             criteria.get("from_station_equals"),
             criteria.get("to_station_equals"),
@@ -3203,6 +3226,25 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
             except Exception as ve:
                 print(f"[WARN] Failed to save violations: {ve}")
 
+        # Save braking pattern data for nominated halts
+        braking_halts_saved = 0
+        print(f"####BRAKING#### user_df is None: {user_df is None}, empty: {user_df.is_empty() if user_df is not None else 'N/A'}")
+        if user_df is not None and not user_df.is_empty():
+            try:
+                filtered = apply_criteria(user_df, criteria)
+                print(f"####BRAKING#### filtered rows={filtered.height}")
+                if filtered.height > 0:
+                    direction = criteria.get("direction_equals", "UP")
+                    print(f"####BRAKING#### Direction={direction}, calling _save_braking_run_data")
+                    braking_halts_saved = _save_braking_run_data(conn, analysis_id, criteria, filtered, direction)
+                    print(f"####BRAKING#### Halts saved: {braking_halts_saved}")
+            except Exception as be:
+                import traceback
+                print(f"####BRAKING#### EXCEPTION: {be}")
+                traceback.print_exc()
+        else:
+            print("####BRAKING#### Skipped - user_df is None or empty")
+
         cursor.close()
         conn.close()
 
@@ -3210,7 +3252,8 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
             "success": True,
             "message": "Analysis saved successfully",
             "analysis_id": analysis_id,
-            "violations_saved": violations_saved
+            "violations_saved": violations_saved,
+            "braking_halts_saved": braking_halts_saved
         }
 
     except mysql.connector.IntegrityError as e:
@@ -3259,6 +3302,20 @@ async def update_analysis(analysis_id: int, request: Request, data: Dict[str, An
         results = data.get("results", {})
         notes = data.get("notes")
         metadata = data.get("metadata")
+
+        # Convert working_date from DD-MM-YYYY to YYYY-MM-DD for MySQL
+        working_date_raw = criteria.get("working_date")
+        working_date_sql = None
+        if working_date_raw:
+            try:
+                parsed = datetime.strptime(working_date_raw, "%d-%m-%Y")
+                working_date_sql = parsed.strftime("%Y-%m-%d")
+            except ValueError:
+                try:
+                    parsed = datetime.strptime(working_date_raw, "%d/%m/%Y")
+                    working_date_sql = parsed.strftime("%Y-%m-%d")
+                except ValueError:
+                    working_date_sql = working_date_raw
 
         if not csv_filename:
             return JSONResponse(
@@ -3315,7 +3372,7 @@ async def update_analysis(analysis_id: int, request: Request, data: Dict[str, An
             criteria.get("analyst_cli_id"),
             criteria.get("analyst_name"),
             datetime.now().date(),
-            criteria.get("working_date"),
+            working_date_sql,  # Converted to YYYY-MM-DD format
             criteria.get("train_number"),
             criteria.get("from_station_equals"),
             criteria.get("to_station_equals"),
@@ -6823,3 +6880,567 @@ def _detect_sharp_brake_point(
         }
 
     return None
+
+
+# ==============================================
+# Fortnightly Braking Pattern Analysis
+# ==============================================
+
+NOMINATED_HALTS_CACHE: list[dict[str, Any]] = []
+NOMINATED_HALTS_LOADED_AT: float = 0.0
+NOMINATED_HALTS_CACHE_TTL = 300  # 5 minutes
+
+
+def _load_nominated_halts(force: bool = False) -> list[dict[str, Any]]:
+    """Load nominated halts from database with caching."""
+    global NOMINATED_HALTS_CACHE, NOMINATED_HALTS_LOADED_AT
+    now = time.time()
+    if not force and NOMINATED_HALTS_CACHE and (now - NOMINATED_HALTS_LOADED_AT) < NOMINATED_HALTS_CACHE_TTL:
+        return NOMINATED_HALTS_CACHE
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, halt_code, halt_name, section_type, section_name, direction, is_active
+            FROM div_rtis_nominated_halts
+            WHERE is_active = TRUE
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        NOMINATED_HALTS_CACHE = rows
+        NOMINATED_HALTS_LOADED_AT = now
+        return rows
+    except Exception as e:
+        print(f"[WARN] Failed to load nominated halts: {e}")
+        return []
+
+
+_BRAKING_GEOFENCE_DEBUG_DONE = False
+
+def _detect_nominated_halt_at_row(lat: float, lon: float, speed: float, direction: str,
+                                   nominated_halts: list[dict]) -> dict | None:
+    """
+    Check if a row represents a halt at a nominated station using geofence + speed.
+    Returns the halt info dict if detected, None otherwise.
+    """
+    global _BRAKING_GEOFENCE_DEBUG_DONE
+    if not _BRAKING_GEOFENCE_DEBUG_DONE:
+        # Debug: check geofences for each nominated halt once
+        for halt in nominated_halts:
+            geos = _geofences_for_station(halt["halt_code"], direction)
+            print(f"\[####BRAKING####-GEO] Halt {halt['halt_code']} ({halt['direction']}): found {len(geos)} geofences")
+            for g in geos:
+                print(f"  -> {g['station_code']} at ({g['latitude']}, {g['longitude']}) r={g.get('radius_m', 120)}m dir={g['direction']}")
+        _BRAKING_GEOFENCE_DEBUG_DONE = True
+
+    if speed > 0.5:
+        return None
+    for halt in nominated_halts:
+        if halt["direction"] not in (direction, "BOTH"):
+            continue
+        geos = _geofences_for_station(halt["halt_code"], direction)
+        if not geos:
+            continue
+        inside, dist = _within_geofence(lat, lon, geos)
+        if inside:
+            return halt
+    return None
+
+
+def _extract_braking_window(df: pl.DataFrame, halt_idx: int, window_m: float = 2400.0) -> dict:
+    """
+    Extract braking data for window_m meters before a halt point.
+    Returns dict with points and summary speeds at key distances.
+    """
+    speed_col = _find_speed_column(df.columns)
+    dist_col = _find_distance_column(df.columns)
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    time_col = _find_time_column(df.columns)
+
+    if not speed_col or not dist_col:
+        return {"points": [], "speeds": {}}
+
+    # Get data as lists
+    speeds = df[speed_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+    dist_steps = df[dist_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+    times = df[time_col].to_list() if time_col else [None] * len(speeds)
+    times = [_stringify_time(t) for t in times]
+
+    # Build cumulative distance
+    cumulative = []
+    running = 0.0
+    for step in dist_steps:
+        running += max(0.0, step or 0.0)
+        cumulative.append(running)
+
+    halt_distance = cumulative[halt_idx]
+
+    # Collect points within window (going backwards from halt)
+    points = []
+    speed_at_dist = {}
+    key_distances = [2400, 1000, 400, 100]
+
+    for i in range(halt_idx, -1, -1):
+        dist_to_halt = halt_distance - cumulative[i]
+        if dist_to_halt > window_m:
+            break
+        points.append({
+            "seq": len(points),
+            "distance_to_halt": round(dist_to_halt, 1),
+            "speed": round(speeds[i], 1) if speeds[i] else 0.0,
+            "time_str": times[i],
+        })
+        # Capture speeds at key distances
+        for key_dist in key_distances:
+            if key_dist not in speed_at_dist and dist_to_halt >= key_dist:
+                speed_at_dist[key_dist] = round(speeds[i], 1) if speeds[i] else 0.0
+
+    # Reverse so points go from far to near (2400m -> 0m)
+    points.reverse()
+    for i, p in enumerate(points):
+        p["seq"] = i
+
+    return {
+        "points": points,
+        "speeds": {
+            "speed_2400m": speed_at_dist.get(2400),
+            "speed_1000m": speed_at_dist.get(1000),
+            "speed_400m": speed_at_dist.get(400),
+            "speed_100m": speed_at_dist.get(100),
+        },
+        "halt_distance_m": halt_distance,
+        "halt_time": times[halt_idx] if halt_idx < len(times) else None,
+    }
+
+
+def _save_braking_run_data(conn, analysis_id: int, criteria: dict, df: pl.DataFrame, direction: str) -> int:
+    """
+    Detect halts at nominated stations and save braking data.
+    Returns number of halts saved.
+    """
+    print(f"####BRAKING#### Starting braking data save for analysis_id={analysis_id}, direction={direction}")
+
+    # Convert working_date to MySQL format
+    working_date_raw = criteria.get("working_date")
+    working_date_sql = None
+    if working_date_raw:
+        try:
+            parsed = datetime.strptime(working_date_raw, "%d-%m-%Y")
+            working_date_sql = parsed.strftime("%Y-%m-%d")
+        except ValueError:
+            try:
+                parsed = datetime.strptime(working_date_raw, "%d/%m/%Y")
+                working_date_sql = parsed.strftime("%Y-%m-%d")
+            except ValueError:
+                working_date_sql = working_date_raw
+
+    nominated_halts = _load_nominated_halts()
+    print(f"\[####BRAKING####] Loaded {len(nominated_halts)} nominated halts: {[h['halt_code'] for h in nominated_halts]}")
+    if not nominated_halts:
+        print("\[####BRAKING####] No nominated halts found - exiting")
+        return 0
+
+    speed_col = _find_speed_column(df.columns)
+    dist_col = _find_distance_column(df.columns)
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+
+    print(f"\[####BRAKING####] Columns: speed={speed_col}, dist={dist_col}, lat={lat_col}, lon={lon_col}")
+    if not speed_col or not dist_col or not lat_col or not lon_col:
+        print("\[####BRAKING####] Missing required columns - exiting")
+        return 0
+
+    speeds = df[speed_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+    lats = df[lat_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+    lons = df[lon_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+
+    print(f"\[####BRAKING####] Data rows: {len(speeds)}, checking for halts...")
+
+    # Find halts at nominated stations
+    detected_halts = []
+    last_halt_positions = {}  # Track last detected position for each halt code
+    halt_candidates = 0
+    MIN_DISTANCE_SAME_HALT = 500.0  # Minimum 500m between same halt detections
+
+    for idx in range(len(speeds)):
+        if speeds[idx] <= 0.5:
+            halt_candidates += 1
+        halt_info = _detect_nominated_halt_at_row(lats[idx], lons[idx], speeds[idx], direction, nominated_halts)
+        if halt_info:
+            halt_code = halt_info["halt_code"]
+            # Check if we've detected this halt before and if we're far enough from last detection
+            if halt_code in last_halt_positions:
+                last_lat, last_lon = last_halt_positions[halt_code]
+                dist = _haversine_m(lats[idx], lons[idx], last_lat, last_lon)
+                if dist < MIN_DISTANCE_SAME_HALT:
+                    # Too close to previous detection of same halt, skip
+                    continue
+
+            print(f"####BRAKING#### Detected halt: {halt_code} at idx={idx}, lat={lats[idx]}, lon={lons[idx]}")
+            detected_halts.append({"idx": idx, "halt_info": halt_info})
+            last_halt_positions[halt_code] = (lats[idx], lons[idx])
+
+    print(f"\[####BRAKING####] Found {halt_candidates} rows with speed<=0.5, detected {len(detected_halts)} nominated halts")
+
+    if not detected_halts:
+        print("\[####BRAKING####] No nominated halts detected - exiting")
+        return 0
+
+    cursor = conn.cursor()
+
+    # Insert braking run
+    run_sql = """
+        INSERT INTO div_rtis_braking_runs (
+            analysis_id, train_number, date_of_working, lp_hrms_id, lp_name,
+            alp_hrms_id, alp_name, loco_number, from_station, to_station,
+            direction, route
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    cursor.execute(run_sql, (
+        analysis_id,
+        criteria.get("train_number"),
+        working_date_sql,
+        criteria.get("lp_hrms_id"),
+        criteria.get("lp_name"),
+        criteria.get("alp_hrms_id"),
+        criteria.get("alp_name"),
+        criteria.get("loco_number"),
+        criteria.get("from_station_equals"),
+        criteria.get("to_station_equals"),
+        direction,
+        criteria.get("route"),
+    ))
+    run_id = cursor.lastrowid
+
+    halts_saved = 0
+
+    for halt_data in detected_halts:
+        halt_info = halt_data["halt_info"]
+        halt_idx = halt_data["idx"]
+
+        # Extract window data
+        window = _extract_braking_window(df, halt_idx, 2400.0)
+        if not window["points"]:
+            continue
+
+        speeds_data = window["speeds"]
+
+        # Insert halt summary
+        halt_sql = """
+            INSERT INTO div_rtis_braking_halts (
+                run_id, halt_code, halt_name, section_type, section_name,
+                halt_distance_m, halt_time, speed_2400m, speed_1000m, speed_400m, speed_100m
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(halt_sql, (
+            run_id,
+            halt_info["halt_code"],
+            halt_info["halt_name"],
+            halt_info["section_type"],
+            halt_info["section_name"],
+            window["halt_distance_m"],
+            window["halt_time"],
+            speeds_data.get("speed_2400m"),
+            speeds_data.get("speed_1000m"),
+            speeds_data.get("speed_400m"),
+            speeds_data.get("speed_100m"),
+        ))
+
+        # Insert window points
+        points_sql = """
+            INSERT INTO div_rtis_braking_points (run_id, halt_code, seq, distance_to_halt, speed, time_str)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        for point in window["points"]:
+            cursor.execute(points_sql, (
+                run_id,
+                halt_info["halt_code"],
+                point["seq"],
+                point["distance_to_halt"],
+                point["speed"],
+                point["time_str"],
+            ))
+
+        halts_saved += 1
+
+    conn.commit()
+    cursor.close()
+    return halts_saved
+
+
+@app.get("/api/braking-analysis/halts")
+async def get_braking_analysis_halts(
+    request: Request,
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    section_type: str = Query("ALL", description="GHAT, PLAIN, or ALL"),
+    direction: str = Query("UP", description="UP or DN"),
+):
+    """
+    Get nominated halts that have braking data in the date range.
+    Returns halt codes with run counts.
+    """
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Base query for halts with data
+        sql = """
+            SELECT
+                nh.halt_code,
+                nh.halt_name,
+                nh.section_type,
+                nh.section_name,
+                nh.direction,
+                COUNT(DISTINCT bh.run_id) as run_count
+            FROM div_rtis_nominated_halts nh
+            LEFT JOIN div_rtis_braking_halts bh ON nh.halt_code = bh.halt_code
+            LEFT JOIN div_rtis_braking_runs br ON bh.run_id = br.run_id
+                AND br.date_of_working BETWEEN %s AND %s
+                AND br.direction = %s
+            WHERE nh.is_active = TRUE
+        """
+        params = [start_date, end_date, direction]
+
+        if section_type and section_type != "ALL":
+            sql += " AND nh.section_type = %s"
+            params.append(section_type)
+
+        sql += " AND (nh.direction = %s OR nh.direction = 'BOTH')"
+        params.append(direction)
+
+        sql += " GROUP BY nh.halt_code, nh.halt_name, nh.section_type, nh.section_name, nh.direction"
+        sql += " ORDER BY nh.section_type, nh.section_name, nh.halt_code"
+
+        cursor.execute(sql, params)
+        halts = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"halts": halts}
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/braking-analysis/data")
+async def get_braking_analysis_data(
+    request: Request,
+    halt_code: str = Query(..., description="Halt code (e.g., T5, TKW, DR)"),
+    section_type: str = Query(..., description="GHAT or PLAIN"),
+    direction: str = Query(..., description="UP or DN"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    lp_hrms_id: str = Query(None, description="Optional LP HRMS ID filter"),
+    limit: int = Query(20, description="Max runs to return (for random selection)"),
+):
+    """
+    Get braking pattern data for a specific halt.
+    Returns runs with window points for ECharts visualization.
+    """
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get runs for this halt
+        run_sql = """
+            SELECT DISTINCT
+                br.run_id,
+                br.train_number,
+                br.date_of_working,
+                br.lp_hrms_id,
+                br.lp_name,
+                br.alp_hrms_id,
+                br.alp_name,
+                br.loco_number,
+                br.direction,
+                bh.halt_code,
+                bh.halt_name,
+                bh.section_type,
+                bh.section_name,
+                bh.speed_2400m,
+                bh.speed_1000m,
+                bh.speed_400m,
+                bh.speed_100m
+            FROM div_rtis_braking_runs br
+            JOIN div_rtis_braking_halts bh ON br.run_id = bh.run_id
+            WHERE bh.halt_code = %s
+              AND bh.section_type = %s
+              AND br.direction = %s
+              AND br.date_of_working BETWEEN %s AND %s
+        """
+        params = [halt_code, section_type, direction, start_date, end_date]
+
+        if lp_hrms_id:
+            run_sql += " AND br.lp_hrms_id = %s"
+            params.append(lp_hrms_id)
+            # For specific LP, get all runs
+        else:
+            # Random selection for "All LPs" mode
+            run_sql += " ORDER BY RAND() LIMIT %s"
+            params.append(limit)
+
+        cursor.execute(run_sql, params)
+        runs = cursor.fetchall()
+
+        # Get points for each run
+        result_runs = []
+        for run in runs:
+            points_sql = """
+                SELECT seq, distance_to_halt, speed, time_str
+                FROM div_rtis_braking_points
+                WHERE run_id = %s AND halt_code = %s
+                ORDER BY seq
+            """
+            cursor.execute(points_sql, (run["run_id"], halt_code))
+            points = cursor.fetchall()
+
+            # Format date for legend
+            date_str = ""
+            if run["date_of_working"]:
+                date_str = run["date_of_working"].strftime("%d/%m") if hasattr(run["date_of_working"], "strftime") else str(run["date_of_working"])[:5]
+
+            result_runs.append({
+                "run_id": run["run_id"],
+                "train_number": run["train_number"],
+                "date_of_working": str(run["date_of_working"]) if run["date_of_working"] else None,
+                "date_short": date_str,
+                "lp_hrms_id": run["lp_hrms_id"],
+                "lp_name": run["lp_name"],
+                "alp_name": run["alp_name"],
+                "loco_number": run["loco_number"],
+                "direction": run["direction"],
+                "halt_code": run["halt_code"],
+                "halt_name": run["halt_name"],
+                "section_type": run["section_type"],
+                "section_name": run["section_name"],
+                "speeds": {
+                    "speed_2400m": run["speed_2400m"],
+                    "speed_1000m": run["speed_1000m"],
+                    "speed_400m": run["speed_400m"],
+                    "speed_100m": run["speed_100m"],
+                },
+                "points": [
+                    {
+                        "distance": p["distance_to_halt"],
+                        "speed": p["speed"],
+                    }
+                    for p in points
+                ],
+                # Legend format: "DD/MM TrainNo LocoNo - LP Name"
+                "legend": f"{date_str} {run['train_number'] or ''} {run['loco_number'] or ''} - {run['lp_name'] or ''}",
+            })
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "halt_code": halt_code,
+            "section_type": section_type,
+            "direction": direction,
+            "runs": result_runs,
+            "total_runs": len(result_runs),
+        }
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/braking-analysis/lps")
+async def get_braking_analysis_lps(
+    request: Request,
+    halt_code: str = Query(..., description="Halt code"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    direction: str = Query("UP", description="UP or DN"),
+):
+    """
+    Get LPs who have braking data at a specific halt.
+    Returns list of LPs with run counts.
+    """
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        sql = """
+            SELECT
+                br.lp_hrms_id,
+                br.lp_name,
+                COUNT(*) as run_count
+            FROM div_rtis_braking_runs br
+            JOIN div_rtis_braking_halts bh ON br.run_id = bh.run_id
+            WHERE bh.halt_code = %s
+              AND br.date_of_working BETWEEN %s AND %s
+              AND br.direction = %s
+              AND br.lp_hrms_id IS NOT NULL
+            GROUP BY br.lp_hrms_id, br.lp_name
+            ORDER BY run_count DESC, br.lp_name
+        """
+        cursor.execute(sql, (halt_code, start_date, end_date, direction))
+        lps = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return {"lps": lps}
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/braking-analysis/cleanup")
+async def cleanup_braking_data(
+    request: Request,
+    days: int = Query(60, description="Delete data older than N days"),
+):
+    """
+    Cleanup old braking analysis data.
+    Admin only - deletes braking data older than specified days.
+    """
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+    # Optional: Check for admin role
+    # if user.get("role") != "admin":
+    #     return JSONResponse({"error": "Admin access required"}, status_code=403)
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Delete old braking runs (cascade deletes halts and points)
+        sql = """
+            DELETE FROM div_rtis_braking_runs
+            WHERE created_at < DATE_SUB(NOW(), INTERVAL %s DAY)
+        """
+        cursor.execute(sql, (days,))
+        deleted_count = cursor.rowcount
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "message": f"Deleted {deleted_count} braking runs older than {days} days",
+            "deleted_count": deleted_count,
+        }
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)

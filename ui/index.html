@@ -465,6 +465,11 @@
           <i class="fa-solid fa-calendar-week"></i> Weekly SIM Down
         </button>
       </a>
+      <a href="braking_report.html" style="text-decoration: none; flex: 1; min-width: 150px;">
+        <button class="secondary" style="width: 100%; background: #f3e8ff; border-color: #c084fc; color: #7c3aed;">
+          <i class="fa-solid fa-gauge-high"></i> Braking Patterns
+        </button>
+      </a>
     </div>
   </section>
 
@@ -1767,6 +1772,7 @@ document.getElementById("btnSaveAnalysis").onclick = async () => {
 
     // Prepare data for save endpoint
     const saveData = {
+      run_id: window.__currentRunId,
       criteria: criteria,
       csv_filename: __uploadedFiles.join(", "),
       csv_file_size: __uploadedFilesTotalSize,

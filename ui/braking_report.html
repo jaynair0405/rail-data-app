@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Braking Pattern Analysis</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+            --ghat: #8b5cf6;
+            --plain: #06b6d4;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        /* Header */
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn:hover { opacity: 0.9; }
+
+        /* Filter Section */
+        .filter-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .filter-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        .filter-group select,
+        .filter-group input {
+            padding: 10px 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+        }
+
+        .filter-group select { cursor: pointer; min-width: 150px; }
+
+        /* Toggle switches */
+        .toggle-group {
+            display: flex;
+            gap: 0;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #cbd5e1;
+        }
+
+        .toggle-btn {
+            padding: 10px 16px;
+            border: none;
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-light);
+            transition: all 0.2s;
+        }
+
+        .toggle-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        .toggle-btn.ghat.active { background: var(--ghat); }
+        .toggle-btn.plain.active { background: var(--plain); }
+
+        /* Charts Grid */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+        }
+
+        @media (max-width: 1200px) {
+            .charts-grid { grid-template-columns: 1fr; }
+        }
+
+        /* Chart Box */
+        .chart-box {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .chart-title {
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .chart-controls {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            background: #fafafa;
+        }
+
+        .chart-container {
+            height: 450px;
+            padding: 16px;
+        }
+
+        .chart-legend {
+            padding: 0 20px 16px;
+            font-size: 12px;
+            color: var(--text-light);
+            max-height: 100px;
+            overflow-y: auto;
+        }
+
+        /* Loading & Empty States */
+        .loading, .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px;
+            color: var(--text-light);
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 12px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .empty-state i { font-size: 48px; opacity: 0.3; margin-bottom: 12px; }
+
+        /* Summary stats */
+        .stats-row {
+            display: flex;
+            gap: 16px;
+            padding: 12px 20px;
+            background: #f0f9ff;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        .stat-item {
+            display: flex;
+            gap: 6px;
+        }
+
+        .stat-label { color: var(--text-light); }
+        .stat-value { font-weight: 600; }
+
+        /* Compact filter */
+        .compact-filter {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .compact-filter label {
+            font-size: 11px;
+            color: var(--text-light);
+        }
+
+        .compact-filter select,
+        .compact-filter input {
+            padding: 6px 10px;
+            font-size: 13px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+        }
+
+        .section-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .section-badge.ghat { background: #ede9fe; color: var(--ghat); }
+        .section-badge.plain { background: #cffafe; color: #0891b2; }
+
+        @media print {
+            body { background: white; padding: 0; }
+            .filter-section, .chart-controls { display: none; }
+            .charts-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <!-- Header -->
+    <div class="page-header">
+        <div class="page-title">
+            <h1><i class="fa-solid fa-gauge-high" style="color: var(--primary);"></i> Braking Pattern Analysis</h1>
+            <p>Compare LP braking behavior at nominated halts (fortnightly analysis)</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <a href="index.html" class="btn">
+                <i class="fa-solid fa-arrow-left"></i> Back to RTIS
+            </a>
+            <button class="btn" onclick="window.print()">
+                <i class="fa-solid fa-print"></i> Print
+            </button>
+        </div>
+    </div>
+
+    <!-- Global Filters -->
+    <div class="filter-section">
+        <div class="filter-row">
+            <div class="filter-group">
+                <label>Fortnight Period</label>
+                <select id="fortnight-period" onchange="onGlobalFilterChange()">
+                    <!-- Populated dynamically -->
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Section Type</label>
+                <div class="toggle-group">
+                    <button class="toggle-btn ghat active" data-value="GHAT" onclick="setSectionType('GHAT')">Ghat</button>
+                    <button class="toggle-btn plain" data-value="PLAIN" onclick="setSectionType('PLAIN')">Plain</button>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <label>Direction</label>
+                <div class="toggle-group">
+                    <button class="toggle-btn active" data-value="UP" onclick="setDirection('UP')">UP</button>
+                    <button class="toggle-btn" data-value="DN" onclick="setDirection('DN')">DN</button>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <label>Run Limit (All LPs)</label>
+                <select id="run-limit">
+                    <option value="10">10 runs</option>
+                    <option value="15">15 runs</option>
+                    <option value="20" selected>20 runs</option>
+                    <option value="25">25 runs</option>
+                    <option value="30">30 runs</option>
+                </select>
+            </div>
+
+            <button class="btn btn-primary" onclick="loadBothCharts()">
+                <i class="fa-solid fa-sync"></i> Load Data
+            </button>
+        </div>
+    </div>
+
+    <!-- Two Chart Boxes -->
+    <div class="charts-grid">
+        <!-- Chart 1 -->
+        <div class="chart-box" id="chart-box-1">
+            <div class="chart-header">
+                <div class="chart-title">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>Chart 1</span>
+                    <span class="section-badge ghat" id="chart1-badge">GHAT</span>
+                </div>
+            </div>
+            <div class="chart-controls">
+                <div class="compact-filter">
+                    <label>Halt Station</label>
+                    <select id="chart1-halt" onchange="loadChart(1)">
+                        <option value="">Select halt...</option>
+                    </select>
+                </div>
+                <div class="compact-filter">
+                    <label>View Mode</label>
+                    <select id="chart1-mode" onchange="onModeChange(1)">
+                        <option value="all">All LPs (Random)</option>
+                        <option value="specific">Specific LP</option>
+                    </select>
+                </div>
+                <div class="compact-filter" id="chart1-lp-filter" style="display: none;">
+                    <label>Select LP</label>
+                    <select id="chart1-lp" onchange="loadChart(1)">
+                        <option value="">Select LP...</option>
+                    </select>
+                </div>
+            </div>
+            <div class="chart-container" id="chart1-container">
+                <div class="empty-state">
+                    <i class="fa-solid fa-chart-area"></i>
+                    <p>Select a halt and click Load Data</p>
+                </div>
+            </div>
+            <div class="stats-row" id="chart1-stats" style="display: none;">
+                <div class="stat-item">
+                    <span class="stat-label">Runs:</span>
+                    <span class="stat-value" id="chart1-run-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Halt:</span>
+                    <span class="stat-value" id="chart1-halt-name">-</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart 2 -->
+        <div class="chart-box" id="chart-box-2">
+            <div class="chart-header">
+                <div class="chart-title">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>Chart 2</span>
+                    <span class="section-badge ghat" id="chart2-badge">GHAT</span>
+                </div>
+            </div>
+            <div class="chart-controls">
+                <div class="compact-filter">
+                    <label>Halt Station</label>
+                    <select id="chart2-halt" onchange="loadChart(2)">
+                        <option value="">Select halt...</option>
+                    </select>
+                </div>
+                <div class="compact-filter">
+                    <label>View Mode</label>
+                    <select id="chart2-mode" onchange="onModeChange(2)">
+                        <option value="all">All LPs (Random)</option>
+                        <option value="specific">Specific LP</option>
+                    </select>
+                </div>
+                <div class="compact-filter" id="chart2-lp-filter" style="display: none;">
+                    <label>Select LP</label>
+                    <select id="chart2-lp" onchange="loadChart(2)">
+                        <option value="">Select LP...</option>
+                    </select>
+                </div>
+            </div>
+            <div class="chart-container" id="chart2-container">
+                <div class="empty-state">
+                    <i class="fa-solid fa-chart-area"></i>
+                    <p>Select a halt and click Load Data</p>
+                </div>
+            </div>
+            <div class="stats-row" id="chart2-stats" style="display: none;">
+                <div class="stat-item">
+                    <span class="stat-label">Runs:</span>
+                    <span class="stat-value" id="chart2-run-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Halt:</span>
+                    <span class="stat-value" id="chart2-halt-name">-</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const API_BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1") ? "" : "/spm/rtis";
+
+let chart1Instance = null;
+let chart2Instance = null;
+let currentSectionType = 'GHAT';
+let currentDirection = 'UP';
+let haltsData = [];
+
+// Color palette for multiple lines
+const COLORS = [
+    '#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed',
+    '#0891b2', '#be185d', '#4d7c0f', '#9333ea', '#0d9488',
+    '#ea580c', '#4f46e5', '#059669', '#db2777', '#65a30d',
+    '#6366f1', '#14b8a6', '#f59e0b', '#8b5cf6', '#06b6d4'
+];
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    populateFortnightPeriods();
+    loadHalts();
+});
+
+// Populate fortnight periods
+function populateFortnightPeriods() {
+    const select = document.getElementById('fortnight-period');
+    const today = new Date();
+    const options = [];
+
+    // Generate last 6 fortnights
+    for (let i = 0; i < 6; i++) {
+        const monthOffset = Math.floor(i / 2);
+        const isSecondHalf = i % 2 === 0;
+
+        const date = new Date(today.getFullYear(), today.getMonth() - monthOffset, 1);
+
+        let startDay, endDay;
+        if (isSecondHalf) {
+            startDay = 16;
+            endDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+        } else {
+            startDay = 1;
+            endDay = 15;
+        }
+
+        const startDate = new Date(date.getFullYear(), date.getMonth(), startDay);
+        const endDate = new Date(date.getFullYear(), date.getMonth(), endDay);
+
+        const label = `${startDay}-${endDay} ${startDate.toLocaleString('default', { month: 'short' })} ${startDate.getFullYear()}`;
+        const value = `${formatDate(startDate)}|${formatDate(endDate)}`;
+
+        options.push({ label, value });
+    }
+
+    select.innerHTML = options.map((opt, i) =>
+        `<option value="${opt.value}" ${i === 0 ? 'selected' : ''}>${opt.label}</option>`
+    ).join('');
+}
+
+function formatDate(date) {
+    return date.toISOString().split('T')[0];
+}
+
+function getDateRange() {
+    const val = document.getElementById('fortnight-period').value;
+    const [start, end] = val.split('|');
+    return { start_date: start, end_date: end };
+}
+
+// Section type toggle
+function setSectionType(type) {
+    currentSectionType = type;
+    document.querySelectorAll('.toggle-btn.ghat, .toggle-btn.plain').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.value === type);
+    });
+
+    // Update badges
+    document.getElementById('chart1-badge').className = `section-badge ${type.toLowerCase()}`;
+    document.getElementById('chart1-badge').textContent = type;
+    document.getElementById('chart2-badge').className = `section-badge ${type.toLowerCase()}`;
+    document.getElementById('chart2-badge').textContent = type;
+
+    loadHalts();
+}
+
+// Direction toggle
+function setDirection(dir) {
+    currentDirection = dir;
+    document.querySelectorAll('.toggle-group .toggle-btn:not(.ghat):not(.plain)').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.value === dir);
+    });
+    loadHalts();
+}
+
+function onGlobalFilterChange() {
+    loadHalts();
+}
+
+// Load halts for current filters
+async function loadHalts() {
+    const { start_date, end_date } = getDateRange();
+
+    try {
+        const params = new URLSearchParams({
+            start_date,
+            end_date,
+            section_type: currentSectionType,
+            direction: currentDirection
+        });
+
+        const response = await fetch(`${API_BASE}/api/braking-analysis/halts?${params}`);
+        const result = await response.json();
+
+        if (result.halts) {
+            haltsData = result.halts;
+            populateHaltDropdowns();
+        }
+    } catch (error) {
+        console.error('Failed to load halts:', error);
+    }
+}
+
+function populateHaltDropdowns() {
+    const html = '<option value="">Select halt...</option>' +
+        haltsData.map(h =>
+            `<option value="${h.halt_code}">${h.halt_code} - ${h.halt_name || ''} (${h.run_count || 0} runs)</option>`
+        ).join('');
+
+    document.getElementById('chart1-halt').innerHTML = html;
+    document.getElementById('chart2-halt').innerHTML = html;
+}
+
+// Mode change handler
+function onModeChange(chartNum) {
+    const mode = document.getElementById(`chart${chartNum}-mode`).value;
+    const lpFilter = document.getElementById(`chart${chartNum}-lp-filter`);
+
+    if (mode === 'specific') {
+        lpFilter.style.display = 'block';
+        loadLPsForHalt(chartNum);
+    } else {
+        lpFilter.style.display = 'none';
+        loadChart(chartNum);
+    }
+}
+
+// Load LPs for a specific halt
+async function loadLPsForHalt(chartNum) {
+    const haltCode = document.getElementById(`chart${chartNum}-halt`).value;
+    if (!haltCode) return;
+
+    const { start_date, end_date } = getDateRange();
+
+    try {
+        const params = new URLSearchParams({
+            halt_code: haltCode,
+            start_date,
+            end_date,
+            direction: currentDirection
+        });
+
+        const response = await fetch(`${API_BASE}/api/braking-analysis/lps?${params}`);
+        const result = await response.json();
+
+        const select = document.getElementById(`chart${chartNum}-lp`);
+        select.innerHTML = '<option value="">Select LP...</option>' +
+            (result.lps || []).map(lp =>
+                `<option value="${lp.lp_hrms_id}">${lp.lp_name || lp.lp_hrms_id} (${lp.run_count} runs)</option>`
+            ).join('');
+    } catch (error) {
+        console.error('Failed to load LPs:', error);
+    }
+}
+
+// Load chart data
+async function loadChart(chartNum) {
+    const haltCode = document.getElementById(`chart${chartNum}-halt`).value;
+    if (!haltCode) return;
+
+    const mode = document.getElementById(`chart${chartNum}-mode`).value;
+    const lpHrmsId = mode === 'specific' ? document.getElementById(`chart${chartNum}-lp`).value : null;
+
+    if (mode === 'specific' && !lpHrmsId) return;
+
+    const { start_date, end_date } = getDateRange();
+    const limit = document.getElementById('run-limit').value;
+
+    showLoading(chartNum);
+
+    try {
+        const params = new URLSearchParams({
+            halt_code: haltCode,
+            section_type: currentSectionType,
+            direction: currentDirection,
+            start_date,
+            end_date,
+            limit
+        });
+
+        if (lpHrmsId) {
+            params.set('lp_hrms_id', lpHrmsId);
+        }
+
+        const response = await fetch(`${API_BASE}/api/braking-analysis/data?${params}`);
+        const result = await response.json();
+
+        if (result.runs && result.runs.length > 0) {
+            renderChart(chartNum, result);
+        } else {
+            showEmpty(chartNum, 'No braking data found for this halt');
+        }
+    } catch (error) {
+        console.error('Failed to load chart:', error);
+        showEmpty(chartNum, 'Failed to load data');
+    }
+}
+
+function loadBothCharts() {
+    loadChart(1);
+    loadChart(2);
+}
+
+// Render ECharts
+function renderChart(chartNum, data) {
+    const container = document.getElementById(`chart${chartNum}-container`);
+    container.innerHTML = '';
+
+    const chart = echarts.init(container);
+    if (chartNum === 1) {
+        if (chart1Instance) chart1Instance.dispose();
+        chart1Instance = chart;
+    } else {
+        if (chart2Instance) chart2Instance.dispose();
+        chart2Instance = chart;
+    }
+
+    // Prepare series data
+    const series = data.runs.map((run, idx) => ({
+        name: run.legend,
+        type: 'line',
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { width: 2 },
+        data: run.points.map(p => [p.distance, p.speed]),
+        itemStyle: { color: COLORS[idx % COLORS.length] }
+    }));
+
+    const option = {
+        tooltip: {
+            trigger: 'item',
+            formatter: function(params) {
+                return `${params.seriesName}<br/>
+                        Distance: ${params.value[0].toFixed(0)}m<br/>
+                        Speed: ${params.value[1].toFixed(1)} km/h`;
+            }
+        },
+        legend: {
+            type: 'scroll',
+            orient: 'horizontal',
+            bottom: 0,
+            data: data.runs.map(r => r.legend),
+            textStyle: { fontSize: 10 }
+        },
+        grid: {
+            left: 60,
+            right: 30,
+            top: 20,
+            bottom: 80
+        },
+        xAxis: {
+            type: 'value',
+            name: 'Distance to Halt (m)',
+            nameLocation: 'middle',
+            nameGap: 30,
+            min: 0,
+            max: 2400,
+            inverse: true,
+            axisLabel: { formatter: '{value}' }
+        },
+        yAxis: {
+            type: 'value',
+            name: 'Speed (km/h)',
+            nameLocation: 'middle',
+            nameGap: 40,
+            min: 0,
+            max: 120
+        },
+        series: series
+    };
+
+    chart.setOption(option);
+
+    // Update stats
+    document.getElementById(`chart${chartNum}-stats`).style.display = 'flex';
+    document.getElementById(`chart${chartNum}-run-count`).textContent = data.total_runs;
+    document.getElementById(`chart${chartNum}-halt-name`).textContent = data.halt_code;
+
+    // Handle resize
+    window.addEventListener('resize', () => chart.resize());
+}
+
+function showLoading(chartNum) {
+    document.getElementById(`chart${chartNum}-container`).innerHTML =
+        '<div class="loading"><div class="spinner"></div><span>Loading...</span></div>';
+    document.getElementById(`chart${chartNum}-stats`).style.display = 'none';
+}
+
+function showEmpty(chartNum, message) {
+    document.getElementById(`chart${chartNum}-container`).innerHTML =
+        `<div class="empty-state"><i class="fa-solid fa-chart-area"></i><p>${message}</p></div>`;
+    document.getElementById(`chart${chartNum}-stats`).style.display = 'none';
+}
+</script>
+
+</body>
+</html>
