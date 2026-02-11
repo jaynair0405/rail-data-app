@@ -22,7 +22,7 @@ try:  # Optional heavy deps for PDF export
     import matplotlib.pyplot as plt  # type: ignore
     from reportlab.lib import colors  # type: ignore
     from reportlab.lib.pagesizes import A4  # type: ignore
-    from reportlab.lib.styles import getSampleStyleSheet  # type: ignore
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ignore
     from reportlab.lib.units import inch  # type: ignore
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak  # type: ignore
     from reportlab.graphics.shapes import Drawing, Line  # type: ignore
@@ -3751,8 +3751,16 @@ async def export_violations_pdf(
         styles = getSampleStyleSheet()
         story = []
 
+        # Format date as DD/MM/YYYY for display
+        try:
+            from datetime import datetime as dt
+            parsed_date = dt.strptime(date, "%Y-%m-%d")
+            display_date = parsed_date.strftime("%d/%m/%Y")
+        except:
+            display_date = date
+
         # Title
-        story.append(Paragraph(f"Daily Speed Violations Report - {date}", styles["Title"]))
+        story.append(Paragraph(f"Daily Speed Violations Report - {display_date}", styles["Title"]))
         story.append(Spacer(1, 12))
 
         # Define table headers and section titles
@@ -3763,6 +3771,10 @@ async def export_violations_pdf(
         }
 
         headers = ["SR", "DATE", "TR NO", "LOCO", "LP NAME", "NCLI", "ALP NAME", "NCLI-ALP", "SPEED", "HALT"]
+
+        # Style for name cells with CMS ID below
+        name_style = ParagraphStyle('NameCell', fontSize=7, leading=8)
+        cms_style = ParagraphStyle('CMSCell', fontSize=5, leading=6, textColor=colors.grey)
 
         for vtype, (title, subtitle) in section_info.items():
             violations = grouped.get(vtype, [])
@@ -3778,29 +3790,45 @@ async def export_violations_pdf(
                 for idx, v in enumerate(violations, 1):
                     wd = v.get("working_date")
                     if hasattr(wd, "strftime"):
-                        wd = wd.strftime("%d.%m.%Y")
+                        wd = wd.strftime("%d.%m")
+
+                    # Format LP name with HRMS ID below
+                    lp_name = str(v.get("lp_name") or "")
+                    lp_hrms = str(v.get("lp_hrms_id") or "")
+                    lp_cell = Paragraph(f"{lp_name}<br/><font size=5 color='grey'>{lp_hrms}</font>", name_style) if lp_name else ""
+
+                    # Format ALP name with HRMS ID below
+                    alp_name = str(v.get("alp_name") or "")
+                    alp_hrms = str(v.get("alp_hrms_id") or "")
+                    alp_cell = Paragraph(f"{alp_name}<br/><font size=5 color='grey'>{alp_hrms}</font>", name_style) if alp_name else ""
+
                     data.append([
                         str(idx),
                         str(wd or ""),
                         str(v.get("train_number") or ""),
                         str(v.get("loco_number") or ""),
-                        str(v.get("lp_name") or ""),
+                        lp_cell,
                         str(v.get("ncli_name") or ""),
-                        str(v.get("alp_name") or ""),
+                        alp_cell,
                         str(v.get("ncli_alp_name") or ""),
                         f"{v.get('speed', 0):.1f}",
                         str(v.get("halt_station") or ""),
                     ])
 
-                table = Table(data, colWidths=[25, 55, 40, 40, 75, 65, 75, 65, 40, 45])
+                # Adjusted column widths: SR, DATE, TR, LOCO smaller; names wider
+                table = Table(data, colWidths=[18, 35, 35, 38, 85, 55, 85, 55, 32, 42])
                 table.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.4, 0.6)),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                     ("FONTSIZE", (0, 0), (-1, -1), 7),
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("ALIGN", (0, 0), (0, -1), "CENTER"),
                     ("ALIGN", (8, 0), (8, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                 ]))
                 story.append(table)
 
@@ -6247,6 +6275,7 @@ async def get_daily_summary(request: Request, date: str = Query(...)):
         # Summary counts
         working_count = len([e for e in entries if e['rtis_status'] == 'Working'])
         sim_down_count = len([e for e in entries if e['rtis_status'] == 'SIM Down'])
+        partial_data_count = len([e for e in entries if e['rtis_status'] == 'Partial Data'])
         non_rtis_count = len([e for e in entries if e['rtis_status'] == 'NON RTIS'])
 
         cursor.close()
@@ -6259,6 +6288,7 @@ async def get_daily_summary(request: Request, date: str = Query(...)):
                 "total": len(entries),
                 "working": working_count,
                 "sim_down": sim_down_count,
+                "partial_data": partial_data_count,
                 "non_rtis": non_rtis_count
             },
             "entries": entries

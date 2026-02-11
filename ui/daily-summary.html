@@ -102,12 +102,14 @@
         }
         .stat-card.working { border-left: 4px solid var(--success); }
         .stat-card.sim-down { border-left: 4px solid var(--danger); }
+        .stat-card.partial-data { border-left: 4px solid #a855f7; }
         .stat-card.non-rtis { border-left: 4px solid var(--warning); }
         .stat-card.total { border-left: 4px solid var(--primary); }
 
         .stat-value { font-size: 32px; font-weight: 700; }
         .stat-card.working .stat-value { color: var(--success); }
         .stat-card.sim-down .stat-value { color: var(--danger); }
+        .stat-card.partial-data .stat-value { color: #a855f7; }
         .stat-card.non-rtis .stat-value { color: var(--warning); }
         .stat-card.total .stat-value { color: var(--primary); }
         .stat-label { font-size: 12px; color: var(--text-light); text-transform: uppercase; margin-top: 4px; }
@@ -155,6 +157,7 @@
         }
         .badge-working { background: #dcfce7; color: #166534; }
         .badge-sim-down { background: #fee2e2; color: #991b1b; }
+        .badge-partial-data { background: #fae8ff; color: #86198f; }
         .badge-non-rtis { background: #fef3c7; color: #92400e; }
         .badge-done { background: #dbeafe; color: #1e40af; }
 
@@ -277,6 +280,10 @@
                 <div class="stat-value" id="statSimDown">-</div>
                 <div class="stat-label">SIM Down</div>
             </div>
+            <div class="stat-card partial-data">
+                <div class="stat-value" id="statPartialData">-</div>
+                <div class="stat-label">Partial Data</div>
+            </div>
             <div class="stat-card non-rtis">
                 <div class="stat-value" id="statNonRtis">-</div>
                 <div class="stat-label">NON RTIS</div>
@@ -345,6 +352,7 @@
                         <label>RTIS Status *</label>
                         <select id="entryStatus">
                             <option value="SIM Down">SIM Down</option>
+                            <option value="Partial Data">Partial Data</option>
                             <option value="NON RTIS">NON RTIS</option>
                         </select>
                     </div>
@@ -452,6 +460,7 @@
         function updateStats(summary) {
             document.getElementById('statWorking').textContent = summary.working || 0;
             document.getElementById('statSimDown').textContent = summary.sim_down || 0;
+            document.getElementById('statPartialData').textContent = summary.partial_data || 0;
             document.getElementById('statNonRtis').textContent = summary.non_rtis || 0;
             document.getElementById('statTotal').textContent = summary.total || 0;
         }
@@ -491,6 +500,7 @@
             switch (status) {
                 case 'Working': return 'badge-working';
                 case 'SIM Down': return 'badge-sim-down';
+                case 'Partial Data': return 'badge-partial-data';
                 case 'NON RTIS': return 'badge-non-rtis';
                 default: return '';
             }
