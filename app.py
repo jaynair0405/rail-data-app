@@ -6076,9 +6076,9 @@ async def add_daily_entry(request: Request):
                 status_code=400
             )
 
-        if rtis_status not in ['SIM Down', 'NON RTIS']:
+        if rtis_status not in ['SIM Down', 'Partial Data', 'NON RTIS']:
             return JSONResponse(
-                {"error": "rtis_status must be 'SIM Down' or 'NON RTIS'", "success": False},
+                {"error": "rtis_status must be 'SIM Down', 'Partial Data' or 'NON RTIS'", "success": False},
                 status_code=400
             )
 
