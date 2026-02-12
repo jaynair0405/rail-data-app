@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS div_rtis_violations (
     threshold DECIMAL(5,1) NOT NULL,
     halt_station VARCHAR(50),
     zone VARCHAR(20),
+    violation_time TIME,
 
     -- Metadata
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

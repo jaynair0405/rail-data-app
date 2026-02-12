@@ -3198,8 +3198,8 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                                 analysis_id, working_date, train_number, loco_number,
                                 lp_name, lp_hrms_id, ncli_name,
                                 alp_name, alp_hrms_id, ncli_alp_name,
-                                violation_type, speed, threshold, halt_station, zone
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                violation_type, speed, threshold, halt_station, zone, violation_time
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
 
                         for v in violations:
@@ -3219,6 +3219,7 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                                 v["threshold"],
                                 v["halt_station"],
                                 v["zone"],
+                                v.get("halt_time"),
                             ))
                             violations_saved += 1
 
@@ -3923,15 +3924,16 @@ async def get_violations_analytics(
             query = """
                 SELECT
                     CASE
-                        WHEN HOUR(working_date) BETWEEN 0 AND 5 THEN '00:00-06:00'
-                        WHEN HOUR(working_date) BETWEEN 6 AND 11 THEN '06:00-12:00'
-                        WHEN HOUR(working_date) BETWEEN 12 AND 17 THEN '12:00-18:00'
+                        WHEN HOUR(violation_time) BETWEEN 0 AND 5 THEN '00:00-06:00'
+                        WHEN HOUR(violation_time) BETWEEN 6 AND 11 THEN '06:00-12:00'
+                        WHEN HOUR(violation_time) BETWEEN 12 AND 17 THEN '12:00-18:00'
                         ELSE '18:00-24:00'
                     END AS time_period,
                     COUNT(*) AS count,
                     AVG(speed - threshold) AS avg_excess
                 FROM div_rtis_violations
                 WHERE DATE(working_date) BETWEEN %s AND %s
+                  AND violation_time IS NOT NULL
                 GROUP BY time_period
                 ORDER BY FIELD(time_period, '00:00-06:00', '06:00-12:00', '12:00-18:00', '18:00-24:00')
             """
@@ -5356,6 +5358,7 @@ def _detect_violations(
                     "threshold": ghat_threshold,
                     "halt_station": halt_station,
                     "zone": "ghat",
+                    "halt_time": halt.get("logging_time"),
                 })
             # Zone B violation (only if not in ghat and in zone B)
             elif not in_zone_a and not in_ghat and speed_1000 > zone_b_threshold:
@@ -5365,6 +5368,7 @@ def _detect_violations(
                     "threshold": zone_b_threshold,
                     "halt_station": halt_station,
                     "zone": "mainline",
+                    "halt_time": halt.get("logging_time"),
                 })
 
         # Check 400m speed (Zone A only)
@@ -5379,6 +5383,7 @@ def _detect_violations(
                     "threshold": zone_a_400m_threshold,
                     "halt_station": halt_station,
                     "zone": "suburban",
+                    "halt_time": halt.get("logging_time"),
                 })
 
     return violations
