@@ -3066,6 +3066,15 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                 status_code=400
             )
 
+        train_number = (criteria.get("train_number") or "").strip()
+        loco_number = (criteria.get("loco_number") or "").strip()
+
+        if not train_number or not loco_number:
+            return JSONResponse(
+                {"error": "Train number and Loco number are required", "success": False},
+                status_code=400
+            )
+
         # Get database connection
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -3321,6 +3330,15 @@ async def update_analysis(analysis_id: int, request: Request, data: Dict[str, An
         if not csv_filename:
             return JSONResponse(
                 {"error": "csv_filename is required", "success": False},
+                status_code=400
+            )
+
+        train_number = (criteria.get("train_number") or "").strip()
+        loco_number = (criteria.get("loco_number") or "").strip()
+
+        if not train_number or not loco_number:
+            return JSONResponse(
+                {"error": "Train number and Loco number are required", "success": False},
                 status_code=400
             )
 

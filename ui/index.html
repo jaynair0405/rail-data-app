@@ -586,6 +586,19 @@
       </table>
     </div>
   </section>
+
+  <!-- Save Analysis Section (at bottom so user must scroll through data first) -->
+  <section id="saveAnalysisSection" class="card" style="display:none; background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border: 2px solid #22c55e;">
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+      <div>
+        <h3 style="margin: 0; color: #166534;"><i class="fa-solid fa-clipboard-check"></i> Ready to Save?</h3>
+        <p style="margin: 5px 0 0 0; color: #15803d; font-size: 13px;">Please verify the chart, trip summary and tables above before saving.</p>
+      </div>
+      <button id="btnSaveAnalysisBottom" class="primary" style="background: #22c55e; border-color: #16a34a; padding: 12px 30px; font-size: 16px;">
+        💾 Save Analysis
+      </button>
+    </div>
+  </section>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
@@ -1482,11 +1495,14 @@ document.getElementById("btnUpload").onclick = async () => {
   __analysisCompleted = false;
   __analysisSaved = false;
   window.__existingAnalysisId = null; // Reset existing analysis ID
-  const saveBtn = document.getElementById("btnSaveAnalysis");
-  saveBtn.style.display = "none";
-  saveBtn.style.opacity = "1";
-  saveBtn.textContent = "💾 Save Analysis";
-  saveBtn.title = "";
+
+  // Hide bottom save section
+  document.getElementById("saveAnalysisSection").style.display = "none";
+  const saveBtnBottom = document.getElementById("btnSaveAnalysisBottom");
+  saveBtnBottom.style.opacity = "1";
+  saveBtnBottom.style.background = "#22c55e";
+  saveBtnBottom.textContent = "💾 Save Analysis";
+  saveBtnBottom.title = "";
 
   const fd = new FormData();
   for (let i = 0; i < files.length; i++) {
@@ -1683,15 +1699,18 @@ async function analyzeAndPlot(){
   await loadBrakeTests(criteria);
   fillSummary();
 
-  // Show Save Analysis button after successful analysis
+  // Show Save Analysis section at bottom after successful analysis
   __analysisCompleted = true;
   __analysisSaved = false;
   document.getElementById("btnExport").disabled = false;
-  const saveBtn = document.getElementById("btnSaveAnalysis");
-  saveBtn.style.display = "inline-block";
-  saveBtn.style.opacity = "1";
-  saveBtn.textContent = "💾 Save Analysis";
-  saveBtn.title = "";
+
+  // Show bottom save section (forces user to scroll through data)
+  const saveSection = document.getElementById("saveAnalysisSection");
+  saveSection.style.display = "block";
+  const saveBtnBottom = document.getElementById("btnSaveAnalysisBottom");
+  saveBtnBottom.style.opacity = "1";
+  saveBtnBottom.textContent = "💾 Save Analysis";
+  saveBtnBottom.title = "";
 }
 
 document.getElementById("btnAnalyze").onclick = analyzeAndPlot;
@@ -1730,7 +1749,8 @@ document.getElementById("btnExport").onclick = async () => {
   }
 };
 
-document.getElementById("btnSaveAnalysis").onclick = async () => {
+// Save Analysis function (shared by top and bottom buttons)
+async function saveAnalysis() {
   if (!__analysisCompleted) {
     alert("Please run analysis first");
     return;
@@ -1754,6 +1774,15 @@ document.getElementById("btnSaveAnalysis").onclick = async () => {
 
   try {
     const criteria = getCriteria();
+
+    // Validate required fields
+    const trainNumber = (criteria.train_number || "").trim();
+    const locoNumber = (criteria.loco_number || "").trim();
+
+    if (!trainNumber || !locoNumber) {
+      alert("Train Number and Loco Number are required to save analysis.");
+      return;
+    }
 
     // Extract working date from fromStation dataset (raw YYYY-MM-DD format)
     const fromStationEl = document.getElementById("fromStation");
@@ -1839,10 +1868,12 @@ document.getElementById("btnSaveAnalysis").onclick = async () => {
       __analysisSaved = true;
       window.__existingAnalysisId = result.analysis_id; // Store ID so next save becomes UPDATE
 
-      const saveBtn = document.getElementById("btnSaveAnalysis");
-      saveBtn.textContent = "✓ " + (isUpdate ? "Updated" : "Saved") + " (ID: " + result.analysis_id + ")";
-      saveBtn.style.opacity = "0.6";
-      saveBtn.title = "Click again to update";
+      // Update bottom save button
+      const saveBtnBottom = document.getElementById("btnSaveAnalysisBottom");
+      saveBtnBottom.textContent = "✓ " + (isUpdate ? "Updated" : "Saved") + " (ID: " + result.analysis_id + ")";
+      saveBtnBottom.style.opacity = "0.6";
+      saveBtnBottom.style.background = "#86efac";
+      saveBtnBottom.title = "Click again to update";
 
       alert(`Analysis ${actionWord} successfully!\nAnalysis ID: ${result.analysis_id}`);
     } else {
@@ -1852,7 +1883,11 @@ document.getElementById("btnSaveAnalysis").onclick = async () => {
     alert("Failed to save analysis. Please try again.");
     console.error(err);
   }
-};
+}
+
+// Connect both save buttons to the same function
+document.getElementById("btnSaveAnalysis").onclick = saveAnalysis;
+document.getElementById("btnSaveAnalysisBottom").onclick = saveAnalysis;
 
 // Back button - navigate to SPM Hub
 document.getElementById("btnBack").onclick = () => {
