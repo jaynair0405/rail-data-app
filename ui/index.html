@@ -601,6 +601,39 @@
   </section>
 </main>
 
+<!-- Floating Back to Top Button -->
+<button id="btnBackToTop" title="Back to Top" style="
+  display: none;
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 1000;
+  transition: opacity 0.3s, transform 0.3s;
+" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">
+  <i class="fa-solid fa-arrow-up"></i>
+</button>
+
+<script>
+// Show/hide back-to-top button based on scroll position
+window.addEventListener('scroll', () => {
+  const btn = document.getElementById('btnBackToTop');
+  if (window.scrollY > 400) {
+    btn.style.display = 'block';
+  } else {
+    btn.style.display = 'none';
+  }
+});
+</script>
+
 <script src="https://cdn.jsdelivr.net/npm/echarts@5"></script>
 <script>
 const API = location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "" : "/spm/rtis";
