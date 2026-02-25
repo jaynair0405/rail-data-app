@@ -151,7 +151,7 @@ STATION_SEQUENCE_LOOKAHEAD_ROWS = 1500
 STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
-BRAKE_OFFSETS = [1000, 400, 300, 200, 100, 50, 20]
+BRAKE_OFFSETS = [1000, 300, 200, 100, 50, 20]
 BRAKE_EVENT_TOLERANCE = 0.3
 BRAKE_REQUIRED_DROP = 45.0
 BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
@@ -2457,12 +2457,13 @@ def _render_pdf_report(
         boundary_halt_idx = _find_boundary_halt_index(filtered_halts, boundary_row_idx)
 
         story.append(Paragraph("Braking Pattern Table", styles["Heading2"]))
-        header = ["Halt"] + [f"{offset} m" for offset in BRAKE_OFFSETS] + ["0 m"]
+        header = ["Halt"] + [f"{400 if offset == 300 else offset} m" for offset in BRAKE_OFFSETS] + ["0 m"]
         data = [header]
 
         # Track cells that need warning background or red text
         warning_cells = []  # List of (row, col) tuples for red background
         warn_text_cells = []  # List of (row, col) tuples for red text only
+        yellow_warning_cells = []  # List of (row, col) tuples for yellow background (20m: 10-15 km/h)
 
         has_ghat_section = False  # Track if any halt is in ghat section for footnote
         for row_idx, halt in enumerate(filtered_halts, start=1):  # start=1 because row 0 is header
@@ -2484,12 +2485,15 @@ def _render_pdf_report(
 
                     # Apply conditional formatting rules
                     if offset == 100:
-                        if speed > 20:
-                            warning_cells.append((col_idx, row_idx))  # Red background + text
-                        elif speed > 15:
-                            warn_text_cells.append((col_idx, row_idx))  # Red text only
-                    elif offset == 20 and speed >= 10:
-                        warning_cells.append((col_idx, row_idx))
+                        if speed > 25:
+                            warning_cells.append((col_idx, row_idx))  # Red background
+                        elif speed >= 20:
+                            yellow_warning_cells.append((col_idx, row_idx))  # Yellow background
+                    elif offset == 20:
+                        if speed > 15:
+                            warning_cells.append((col_idx, row_idx))  # Red background
+                        elif speed >= 10:
+                            yellow_warning_cells.append((col_idx, row_idx))  # Yellow background
                     elif offset == 1000:
                         # Zone-based threshold: 70 for suburban, 60/90 for mainline, 40 for ghat section
                         threshold_1000m = _get_1000m_threshold(
@@ -2497,8 +2501,8 @@ def _render_pdf_report(
                         )
                         if speed > threshold_1000m:
                             warn_text_cells.append((col_idx, row_idx))
-                    elif offset == 500:
-                        # 400m threshold only applies in Zone A (suburban)
+                    elif offset == 300:
+                        # 400m threshold only applies in Zone A (suburban) - uses 300m speed data
                         threshold_400m = _get_400m_threshold(
                             halt_list_idx, boundary_halt_idx, from_station, direction, train_number
                         )
@@ -2522,12 +2526,17 @@ def _render_pdf_report(
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]
 
-        # Add red background for critical warning cells (100m > 20, 20m >= 10)
+        # Add red background for critical warning cells (100m > 25, 20m > 15)
         warning_color = colors.Color(1, 0.898, 0.898)  # #ffe5e5 in RGB
         red_text = colors.Color(0.843, 0.149, 0.239)  # #d7263d
         for col, row in warning_cells:
             table_style.append(("BACKGROUND", (col, row), (col, row), warning_color))
             table_style.append(("TEXTCOLOR", (col, row), (col, row), red_text))
+
+        # Add yellow background for caution cells (20m: 10-15 km/h)
+        yellow_color = colors.Color(1, 0.976, 0.769)  # #fff9c4 light yellow
+        for col, row in yellow_warning_cells:
+            table_style.append(("BACKGROUND", (col, row), (col, row), yellow_color))
 
         # Add red text only for moderate warnings (1000m > 70/60 based on zone)
         for col, row in warn_text_cells:
@@ -5210,7 +5219,7 @@ def _build_restriction_segments(labels: list[str], limits: list[float | None]) -
 
 # Zone boundary stations for braking pattern 1000m threshold
 ZONE_BOUNDARY_STATIONS = {
-    "main_line": ["TLA", "BUD"],  # Thane/Badlapur boundary for main line
+    "main_line": ["KYN"],  # Kalyan boundary for main line
     "konkan": ["DTVL"],  # Dativali boundary for Konkan line
 }
 
@@ -5389,8 +5398,8 @@ def _detect_violations(
                     "halt_time": halt.get("logging_time"),
                 })
 
-        # Check 400m speed (Zone A only)
-        reading_400 = speeds.get("400")
+        # Check 400m speed (Zone A only) - uses speed at 300m
+        reading_400 = speeds.get("300")
         if reading_400 and isinstance(reading_400.get("speed"), (int, float)):
             speed_400 = reading_400["speed"]
 
