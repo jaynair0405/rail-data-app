@@ -5355,16 +5355,17 @@ def _detect_violations(
     # Ghat threshold: always 40
     ghat_threshold = 40.0
 
-    # Determine if journey starts from Mumbai side
+    # Determine if journey involves Mumbai terminals (only then Zone A applies)
+    involves_mumbai = from_station in MUMBAI_TERMINALS or to_station in MUMBAI_TERMINALS
     starts_from_mumbai = from_station in MUMBAI_TERMINALS or direction == "DN"
 
     for idx, halt in enumerate(halts):
         halt_station = halt.get("station") or f"Halt {halt.get('sequence')}"
         speeds = halt.get("speeds") or {}
 
-        # Determine zone for this halt
-        in_zone_a = True  # Default
-        if boundary_halt_idx is not None:
+        # Determine zone for this halt - Zone A only applies for Mumbai-connected journeys
+        in_zone_a = False  # Default to Zone B (no 400m threshold)
+        if boundary_halt_idx is not None and involves_mumbai:
             if starts_from_mumbai:
                 in_zone_a = idx <= boundary_halt_idx
             else:
