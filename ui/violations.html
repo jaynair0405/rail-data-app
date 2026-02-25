@@ -419,7 +419,7 @@
 </div>
 
 <script>
-const API_BASE = window.location.origin + '/spm/rtis';
+const API_BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1") ? "" : "/spm/rtis";
 let dateType = 'analysis'; // Default to analysis date
 
 // Initialize
