@@ -6572,7 +6572,7 @@ async def get_sim_down_weekly(
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        # Get all entries for the week (SIM Down and NON RTIS)
+        # Get all entries for the week (SIM Down and NON RTIS) - CR locos only
         cursor.execute("""
             SELECT
                 e.loco_number,
@@ -6581,7 +6581,7 @@ async def get_sim_down_weekly(
                 COALESCE(l.current_shed, '') as base_shed,
                 COALESCE(l.loco_type, '') as loco_type
             FROM div_rtis_daily_entries e
-            LEFT JOIN div_cr_locos l ON e.loco_number COLLATE utf8mb4_unicode_ci = l.loco_number COLLATE utf8mb4_unicode_ci
+            INNER JOIN div_cr_locos l ON e.loco_number COLLATE utf8mb4_unicode_ci = l.loco_number COLLATE utf8mb4_unicode_ci
             WHERE e.rtis_status IN ('SIM Down', 'NON RTIS')
               AND e.working_date BETWEEN %s AND %s
             ORDER BY l.current_shed, e.loco_number, e.working_date
