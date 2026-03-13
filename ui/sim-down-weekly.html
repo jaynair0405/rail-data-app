@@ -16,6 +16,8 @@
             --danger: #ef4444;
             --warning: #f59e0b;
             --success: #10b981;
+            --sim-down: #ffeb3b;
+            --non-rtis: #f44336;
         }
 
         * { box-sizing: border-box; }
@@ -29,7 +31,7 @@
             line-height: 1.5;
         }
 
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
 
         .page-header {
             display: flex;
@@ -74,6 +76,7 @@
             border-radius: 8px;
             border: 1px solid var(--border);
             margin-bottom: 24px;
+            flex-wrap: wrap;
         }
         .week-picker label { font-weight: 600; font-size: 14px; }
         .week-picker input {
@@ -82,13 +85,31 @@
             border-radius: 6px;
             font-size: 14px;
         }
-        .week-picker .week-display {
-            padding: 8px 16px;
-            background: #f1f5f9;
-            border-radius: 6px;
-            font-weight: 600;
-            color: var(--primary);
+
+        /* Legend */
+        .legend {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 16px;
+            padding: 12px 16px;
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid var(--border);
         }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        .legend-color.sim-down { background: var(--sim-down); }
+        .legend-color.non-rtis { background: var(--non-rtis); }
 
         /* Stats */
         .stats-row {
@@ -106,13 +127,13 @@
             text-align: center;
         }
         .stat-card.locos { border-left: 4px solid var(--danger); }
-        .stat-card.incidents { border-left: 4px solid var(--warning); }
-        .stat-card.days { border-left: 4px solid var(--primary); }
+        .stat-card.sim-down { border-left: 4px solid #f59e0b; }
+        .stat-card.non-rtis { border-left: 4px solid var(--danger); }
 
         .stat-value { font-size: 32px; font-weight: 700; }
         .stat-card.locos .stat-value { color: var(--danger); }
-        .stat-card.incidents .stat-value { color: var(--warning); }
-        .stat-card.days .stat-value { color: var(--primary); }
+        .stat-card.sim-down .stat-value { color: #f59e0b; }
+        .stat-card.non-rtis .stat-value { color: var(--danger); }
         .stat-label { font-size: 12px; color: var(--text-light); text-transform: uppercase; margin-top: 4px; }
 
         /* Table */
@@ -132,21 +153,29 @@
         }
         .table-header h3 { margin: 0; font-size: 16px; }
 
-        table { width: 100%; border-collapse: collapse; }
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        table { width: 100%; border-collapse: collapse; min-width: 900px; }
 
         th, td {
-            padding: 12px 16px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-            font-size: 14px;
+            padding: 10px 12px;
+            text-align: center;
+            border: 1px solid var(--border);
+            font-size: 13px;
         }
 
         th {
             background: #f8fafc;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 600;
             color: var(--text-light);
             text-transform: uppercase;
+        }
+
+        td:nth-child(1), td:nth-child(2), td:nth-child(3), td:nth-child(4) {
+            text-align: left;
         }
 
         tr:hover { background: #f8fafc; }
@@ -154,32 +183,22 @@
         .loco-number {
             font-family: monospace;
             font-weight: 600;
-            font-size: 15px;
-        }
-
-        .count-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-weight: 700;
             font-size: 14px;
         }
-        .count-badge.high { background: #fee2e2; color: #991b1b; }
-        .count-badge.medium { background: #fef3c7; color: #92400e; }
-        .count-badge.low { background: #dbeafe; color: #1e40af; }
 
-        .dates-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-        }
-        .date-chip {
-            display: inline-block;
-            padding: 2px 8px;
-            background: #f1f5f9;
-            border-radius: 4px;
+        /* Status cells */
+        .status-cell {
+            font-weight: 500;
             font-size: 12px;
-            font-family: monospace;
+            white-space: nowrap;
+        }
+        .status-cell.sim-down {
+            background: var(--sim-down) !important;
+            color: #000;
+        }
+        .status-cell.non-rtis {
+            background: var(--non-rtis) !important;
+            color: #fff;
         }
 
         /* Loading / Empty */
@@ -211,6 +230,13 @@
             .stats-row { grid-template-columns: 1fr; }
             .week-picker { flex-wrap: wrap; }
         }
+
+        @media print {
+            body { padding: 0; background: white; }
+            .page-header, .week-picker, .header-actions, .btn { display: none; }
+            .table-card { border: none; }
+            .stats-row { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -218,8 +244,8 @@
         <!-- Header -->
         <div class="page-header">
             <div class="page-title">
-                <h1><i class="fas fa-calendar-week"></i> Weekly SIM Down Report</h1>
-                <p>Locos with SIM Down status during the selected week</p>
+                <h1><i class="fas fa-calendar-week"></i> Weekly SIM Down / NON RTIS Report</h1>
+                <p>Locos with SIM Down or NON RTIS status during the selected week</p>
             </div>
             <div class="header-actions">
                 <a href="daily-summary.html" class="btn"><i class="fas fa-clipboard-list"></i> Daily Summary</a>
@@ -238,43 +264,58 @@
             <button class="btn" onclick="goToNextWeek()">Next <i class="fas fa-chevron-right"></i></button>
         </div>
 
+        <!-- Legend -->
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color sim-down"></div>
+                <span>SIM Down</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color non-rtis"></div>
+                <span>NON RTIS</span>
+            </div>
+        </div>
+
         <!-- Stats -->
         <div class="stats-row">
             <div class="stat-card locos">
                 <div class="stat-value" id="statLocos">-</div>
                 <div class="stat-label">Locos Affected</div>
             </div>
-            <div class="stat-card incidents">
-                <div class="stat-value" id="statIncidents">-</div>
-                <div class="stat-label">Total Incidents</div>
+            <div class="stat-card sim-down">
+                <div class="stat-value" id="statSimDown">-</div>
+                <div class="stat-label">SIM Down Incidents</div>
             </div>
-            <div class="stat-card days">
-                <div class="stat-value" id="statDays">-</div>
-                <div class="stat-label">Days with SIM Down</div>
+            <div class="stat-card non-rtis">
+                <div class="stat-value" id="statNonRtis">-</div>
+                <div class="stat-label">NON RTIS Incidents</div>
             </div>
         </div>
 
         <!-- Table -->
         <div class="table-card">
             <div class="table-header">
-                <h3>SIM Down Locos</h3>
+                <h3>Weekly Status Report</h3>
                 <button class="btn btn-success" onclick="exportReport()">
                     <i class="fas fa-download"></i> Export CSV
                 </button>
             </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>SR</th>
-                        <th>Loco Number</th>
-                        <th>SIM Down Count</th>
-                        <th>Dates</th>
-                    </tr>
-                </thead>
-                <tbody id="reportTableBody">
-                    <tr><td colspan="4" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
-                </tbody>
-            </table>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr id="tableHeaderRow">
+                            <th>Rly</th>
+                            <th>Base Shed</th>
+                            <th>Loco No.</th>
+                            <th>Type</th>
+                            <!-- Date columns will be added dynamically -->
+                        </tr>
+                    </thead>
+                    <tbody id="reportTableBody">
+                        <tr><td colspan="11" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
@@ -286,6 +327,7 @@
         let currentWeekStart = '';
         let currentWeekEnd = '';
         let reportData = [];
+        let weekDates = [];
 
         document.addEventListener('DOMContentLoaded', () => {
             goToCurrentWeek();
@@ -293,9 +335,7 @@
 
         function getSaturday(d) {
             const date = new Date(d);
-            const day = date.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-            // Calculate days to go back to reach Saturday
-            // Sat(6)->0, Sun(0)->1, Mon(1)->2, ..., Fri(5)->6
+            const day = date.getDay();
             const daysBack = (day + 1) % 7;
             const saturday = new Date(date);
             saturday.setDate(date.getDate() - daysBack);
@@ -314,7 +354,15 @@
 
         function formatDisplayDate(dateStr) {
             const d = new Date(dateStr);
-            return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+            return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }).replace(' ', '-');
+        }
+
+        function formatHeaderDate(dateStr) {
+            const d = new Date(dateStr);
+            const day = d.getDate().toString().padStart(2, '0');
+            const month = (d.getMonth() + 1).toString().padStart(2, '0');
+            const year = d.getFullYear().toString().slice(-2);
+            return `${day}-${month}-${year}`;
         }
 
         function setWeek(startDate) {
@@ -357,7 +405,7 @@
             if (!currentWeekStart || !currentWeekEnd) return;
 
             document.getElementById('reportTableBody').innerHTML =
-                '<tr><td colspan="4" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+                '<tr><td colspan="11" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
 
             try {
                 const res = await fetch(`${API_BASE}/api/sim-down-weekly?week_start=${currentWeekStart}&week_end=${currentWeekEnd}`);
@@ -365,59 +413,72 @@
 
                 if (data.success) {
                     reportData = data.locos || [];
+                    weekDates = data.dates || [];
+                    updateTableHeader(weekDates);
                     updateStats(reportData);
-                    renderTable(reportData);
+                    renderTable(reportData, weekDates);
                 } else {
                     showToast(data.error || 'Failed to load report', 'error');
                 }
             } catch (e) {
                 console.error('Load report error:', e);
                 document.getElementById('reportTableBody').innerHTML =
-                    '<tr><td colspan="4" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load report</td></tr>';
+                    '<tr><td colspan="11" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load report</td></tr>';
             }
+        }
+
+        function updateTableHeader(dates) {
+            const headerRow = document.getElementById('tableHeaderRow');
+            // Keep first 4 columns, add date columns
+            headerRow.innerHTML = `
+                <th>Rly</th>
+                <th>Base Shed</th>
+                <th>Loco No.</th>
+                <th>Type</th>
+                ${dates.map(d => `<th>${formatHeaderDate(d)}</th>`).join('')}
+            `;
         }
 
         function updateStats(locos) {
             const totalLocos = locos.length;
-            const totalIncidents = locos.reduce((sum, l) => sum + (l.sim_down_count || 0), 0);
-
-            // Count unique days with SIM down
-            const uniqueDays = new Set();
-            locos.forEach(l => {
-                (l.dates || []).forEach(d => uniqueDays.add(d));
-            });
+            const totalSimDown = locos.reduce((sum, l) => sum + (l.sim_down_count || 0), 0);
+            const totalNonRtis = locos.reduce((sum, l) => sum + (l.non_rtis_count || 0), 0);
 
             document.getElementById('statLocos').textContent = totalLocos;
-            document.getElementById('statIncidents').textContent = totalIncidents;
-            document.getElementById('statDays').textContent = uniqueDays.size;
+            document.getElementById('statSimDown').textContent = totalSimDown;
+            document.getElementById('statNonRtis').textContent = totalNonRtis;
         }
 
-        function renderTable(locos) {
+        function renderTable(locos, dates) {
             const tbody = document.getElementById('reportTableBody');
+            const colCount = 4 + dates.length;
 
             if (!locos || locos.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><i class="fas fa-check-circle"></i><br>No SIM Down locos for this week</td></tr>';
+                tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty-state"><i class="fas fa-check-circle"></i><br>No SIM Down or NON RTIS locos for this week</td></tr>`;
                 return;
             }
 
-            tbody.innerHTML = locos.map((l, idx) => `
+            tbody.innerHTML = locos.map(l => `
                 <tr>
-                    <td>${idx + 1}</td>
+                    <td>${l.rly || 'CR'}</td>
+                    <td>${l.base_shed || '-'}</td>
                     <td class="loco-number">${l.loco_number}</td>
-                    <td><span class="count-badge ${getCountClass(l.sim_down_count)}">${l.sim_down_count}</span></td>
-                    <td>
-                        <div class="dates-list">
-                            ${(l.dates || []).map(d => `<span class="date-chip">${formatDisplayDate(d)}</span>`).join('')}
-                        </div>
-                    </td>
+                    <td>${l.loco_type || '-'}</td>
+                    ${dates.map(d => {
+                        const status = l.daily_status[d] || '';
+                        let cellClass = 'status-cell';
+                        let displayText = '';
+                        if (status === 'SIM Down') {
+                            cellClass += ' sim-down';
+                            displayText = 'SIM Down';
+                        } else if (status === 'NON RTIS') {
+                            cellClass += ' non-rtis';
+                            displayText = 'NON RTIS';
+                        }
+                        return `<td class="${cellClass}">${displayText}</td>`;
+                    }).join('')}
                 </tr>
             `).join('');
-        }
-
-        function getCountClass(count) {
-            if (count >= 5) return 'high';
-            if (count >= 3) return 'medium';
-            return 'low';
         }
 
         function exportReport() {
@@ -426,10 +487,21 @@
                 return;
             }
 
-            let csv = 'SR,Loco Number,SIM Down Count,Dates\n';
-            reportData.forEach((l, idx) => {
-                const dates = (l.dates || []).join('; ');
-                csv += `${idx + 1},${l.loco_number},${l.sim_down_count},"${dates}"\n`;
+            // CSV header
+            let csv = 'Rly,Base Shed,Loco No.,Type,' + weekDates.map(d => formatHeaderDate(d)).join(',') + '\n';
+
+            // CSV rows
+            reportData.forEach(l => {
+                const row = [
+                    l.rly || 'CR',
+                    l.base_shed || '',
+                    l.loco_number,
+                    l.loco_type || ''
+                ];
+                weekDates.forEach(d => {
+                    row.push(l.daily_status[d] || '');
+                });
+                csv += row.map(v => `"${v}"`).join(',') + '\n';
             });
 
             const blob = new Blob([csv], { type: 'text/csv' });

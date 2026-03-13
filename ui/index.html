@@ -399,6 +399,13 @@
   <input id="lpInput" list="lpOptions" placeholder="Start typing name" autocomplete="off" />
   <input type="hidden" id="lpHrmsId" />
   <input type="hidden" id="lpCliId" />
+  <span class="manual-toggle">
+    <input type="checkbox" id="lpOtherDepot" /> <small>Other depot</small>
+    <select id="lpDepotSelect" style="display:none; margin-left:4px; font-size:12px;">
+      <option value="KYN">KYN</option>
+      <option value="PNVL">PNVL</option>
+    </select>
+  </span>
   <span class="manual-toggle"><input type="checkbox" id="lpManual" /> <small>Other div.</small></span>
 </label>
 
@@ -410,6 +417,13 @@
   <input id="alpInput" list="alpOptions" placeholder="Start typing name" autocomplete="off" />
   <input type="hidden" id="alpHrmsId" />
   <input type="hidden" id="alpCliId" />
+  <span class="manual-toggle">
+    <input type="checkbox" id="alpOtherDepot" /> <small>Other depot</small>
+    <select id="alpDepotSelect" style="display:none; margin-left:4px; font-size:12px;">
+      <option value="KYN">KYN</option>
+      <option value="PNVL">PNVL</option>
+    </select>
+  </span>
   <span class="manual-toggle"><input type="checkbox" id="alpManual" /> <small>Other div.</small></span>
 </label>
 
@@ -656,6 +670,10 @@ let __analysisSaved = false;
 let __lpManualMode = false;
 let __alpManualMode = false;
 
+// Other depot mode for LP/ALP
+let __lpOtherDepot = null;  // null = CSMT, 'KYN' or 'PNVL'
+let __alpOtherDepot = null;
+
 const BRAKE_OFFSETS = [1000, 300, 200, 100, 50, 20];  // 300m data displayed as "400 m"
 const BRAKE_CHART_STEPS = [...new Set([...BRAKE_OFFSETS, 0])].sort((a, b) => b - a);
 
@@ -753,8 +771,8 @@ lpInputEl.addEventListener("input", async (e) => {
   clearTimeout(__lpSearchTimer);
   __lpSearchTimer = setTimeout(() => {
     // only search when user typed enough; else load default list
-    if (val.trim().length >= 2) refreshLpDatalist(val.trim());
-    else refreshLpDatalist("");
+    if (val.trim().length >= 2) refreshLpDatalist(val.trim(), __lpOtherDepot);
+    else refreshLpDatalist("", __lpOtherDepot);
   }, 250);
 
   // If user picked an exact datalist option, resolve it
@@ -793,8 +811,9 @@ function makeLpLabel(r) {
   return `${r.name} (${r.hrms_id}) — ${cms}`;
 }
 
-async function refreshLpDatalist(q) {
-  const url = `${API}/lp-search?q=${encodeURIComponent(q || "")}`;
+async function refreshLpDatalist(q, depot = null) {
+  let url = `${API}/lp-search?q=${encodeURIComponent(q || "")}`;
+  if (depot) url += `&depot=${encodeURIComponent(depot)}`;
   const resp = await fetch(url);
   const j = await resp.json();
 
@@ -882,8 +901,9 @@ function makeAlpLabel(r) {
   return `${r.name} (${r.hrms_id}) — ${desig}`;
 }
 
-async function refreshAlpDatalist(q) {
-  const url = `${API}/alp-search?q=${encodeURIComponent(q || "")}`;
+async function refreshAlpDatalist(q, depot = null) {
+  let url = `${API}/alp-search?q=${encodeURIComponent(q || "")}`;
+  if (depot) url += `&depot=${encodeURIComponent(depot)}`;
   const resp = await fetch(url);
   const j = await resp.json();
 
@@ -931,8 +951,8 @@ alpInputEl.addEventListener("input", async (e) => {
   // Live search (debounced)
   clearTimeout(__alpSearchTimer);
   __alpSearchTimer = setTimeout(() => {
-    if (val.trim().length >= 2) refreshAlpDatalist(val.trim());
-    else refreshAlpDatalist("");
+    if (val.trim().length >= 2) refreshAlpDatalist(val.trim(), __alpOtherDepot);
+    else refreshAlpDatalist("", __alpOtherDepot);
   }, 250);
 
   // If user picked an exact datalist option, resolve it
@@ -957,6 +977,68 @@ alpInputEl.addEventListener("input", async (e) => {
 refreshAlpDatalist("");
 
 // ------------------------------
+// Other Depot Toggle (KYN/PNVL)
+// ------------------------------
+
+document.getElementById("lpOtherDepot").addEventListener("change", (e) => {
+  const select = document.getElementById("lpDepotSelect");
+  if (e.target.checked) {
+    select.style.display = "inline";
+    __lpOtherDepot = select.value;
+    // Disable manual mode if enabled
+    document.getElementById("lpManual").checked = false;
+    __lpManualMode = false;
+    document.getElementById("lpInput").setAttribute("list", "lpOptions");
+    document.getElementById("lpInput").classList.remove("manual-mode");
+  } else {
+    select.style.display = "none";
+    __lpOtherDepot = null;
+  }
+  // Clear and refresh
+  document.getElementById("lpInput").value = "";
+  clearLPResolved();
+  refreshLpDatalist("", __lpOtherDepot);
+  fillSummary();
+});
+
+document.getElementById("lpDepotSelect").addEventListener("change", (e) => {
+  __lpOtherDepot = e.target.value;
+  document.getElementById("lpInput").value = "";
+  clearLPResolved();
+  refreshLpDatalist("", __lpOtherDepot);
+  fillSummary();
+});
+
+document.getElementById("alpOtherDepot").addEventListener("change", (e) => {
+  const select = document.getElementById("alpDepotSelect");
+  if (e.target.checked) {
+    select.style.display = "inline";
+    __alpOtherDepot = select.value;
+    // Disable manual mode if enabled
+    document.getElementById("alpManual").checked = false;
+    __alpManualMode = false;
+    document.getElementById("alpInput").setAttribute("list", "alpOptions");
+    document.getElementById("alpInput").classList.remove("manual-mode");
+  } else {
+    select.style.display = "none";
+    __alpOtherDepot = null;
+  }
+  // Clear and refresh
+  document.getElementById("alpInput").value = "";
+  clearALPResolved();
+  refreshAlpDatalist("", __alpOtherDepot);
+  fillSummary();
+});
+
+document.getElementById("alpDepotSelect").addEventListener("change", (e) => {
+  __alpOtherDepot = e.target.value;
+  document.getElementById("alpInput").value = "";
+  clearALPResolved();
+  refreshAlpDatalist("", __alpOtherDepot);
+  fillSummary();
+});
+
+// ------------------------------
 // Manual Entry Toggle (Other Division Staff)
 // ------------------------------
 
@@ -965,6 +1047,10 @@ document.getElementById("lpManual").addEventListener("change", (e) => {
   const input = document.getElementById("lpInput");
 
   if (__lpManualMode) {
+    // Disable depot mode if enabled
+    document.getElementById("lpOtherDepot").checked = false;
+    document.getElementById("lpDepotSelect").style.display = "none";
+    __lpOtherDepot = null;
     // Switch to manual mode
     input.removeAttribute("list");
     input.classList.add("manual-mode");
@@ -992,6 +1078,10 @@ document.getElementById("alpManual").addEventListener("change", (e) => {
   const input = document.getElementById("alpInput");
 
   if (__alpManualMode) {
+    // Disable depot mode if enabled
+    document.getElementById("alpOtherDepot").checked = false;
+    document.getElementById("alpDepotSelect").style.display = "none";
+    __alpOtherDepot = null;
     // Switch to manual mode
     input.removeAttribute("list");
     input.classList.add("manual-mode");

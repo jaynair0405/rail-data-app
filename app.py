@@ -2499,14 +2499,14 @@ def _render_pdf_report(
                         threshold_1000m = _get_1000m_threshold(
                             halt_list_idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
                         )
-                        if speed > threshold_1000m:
+                        if speed >= threshold_1000m + 1:
                             warn_text_cells.append((col_idx, row_idx))
                     elif offset == 300:
                         # 400m threshold only applies in Zone A (suburban) - uses 300m speed data
                         threshold_400m = _get_400m_threshold(
                             halt_list_idx, boundary_halt_idx, from_station, direction, train_number
                         )
-                        if threshold_400m is not None and speed > threshold_400m:
+                        if threshold_400m is not None and speed >= threshold_400m + 1:
                             warn_text_cells.append((col_idx, row_idx))
                 else:
                     row.append("—")
@@ -3455,8 +3455,10 @@ async def update_analysis(analysis_id: int, request: Request, data: Dict[str, An
 # ALP Search & Resolve endpoints
 # ------------------------------
 @app.get("/alp-search")
-async def alp_search(q: str = Query(default="")):
-    """Search ALP/Sr.ALP staff by name (designation_id IN (1, 2))"""
+async def alp_search(q: str = Query(default=""), depot: str = Query(default="")):
+    """Search ALP/Sr.ALP staff by name (designation_id IN (1, 2))
+    Optional depot parameter: KYN or PNVL to filter by other depots
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -3466,7 +3468,19 @@ async def alp_search(q: str = Query(default="")):
 
         search_term = f"%{q.strip()}%" if q.strip() else "%"
 
-        query = """
+        # Build office filter based on depot parameter
+        if depot and depot.upper() in ('KYN', 'PNVL'):
+            depot_upper = depot.upper()
+            office_filter = f"""
+                AND (
+                    s.current_office_code = '{depot_upper}-ML'
+                    OR s.current_cms_id LIKE '{depot_upper}%'
+                )
+            """
+        else:
+            office_filter = "AND s.current_office_code = 'CSMT-ML'"
+
+        query = f"""
             SELECT
                 s.hrms_id,
                 s.name,
@@ -3479,7 +3493,7 @@ async def alp_search(q: str = Query(default="")):
             LEFT JOIN designations d ON s.designation_id = d.id
             WHERE s.designation_id IN (1, 2)
               AND s.status = 'Active'
-              AND s.current_office_code = 'CSMT-ML'
+              {office_filter}
               AND s.name LIKE %s
             ORDER BY s.name
             LIMIT 50
@@ -3542,8 +3556,10 @@ async def get_alp_by_hrms(hrms_id: str):
 # LP Search & Resolve endpoints
 # ------------------------------
 @app.get("/lp-search")
-async def lp_search(q: str = Query(default="")):
-    """Search LP/Sr.LP staff by name (designation_id IN (3, 4))"""
+async def lp_search(q: str = Query(default=""), depot: str = Query(default="")):
+    """Search LP/Sr.LP staff by name (designation_id IN (5, 6, 7, 8))
+    Optional depot parameter: KYN or PNVL to filter by other depots
+    """
     try:
         conn = get_db_connection()
         if not conn:
@@ -3553,7 +3569,19 @@ async def lp_search(q: str = Query(default="")):
 
         search_term = f"%{q.strip()}%" if q.strip() else "%"
 
-        query = """
+        # Build office filter based on depot parameter
+        if depot and depot.upper() in ('KYN', 'PNVL'):
+            depot_upper = depot.upper()
+            office_filter = f"""
+                AND (
+                    s.current_office_code = '{depot_upper}-ML'
+                    OR s.current_cms_id LIKE '{depot_upper}%'
+                )
+            """
+        else:
+            office_filter = "AND s.current_office_code = 'CSMT-ML'"
+
+        query = f"""
             SELECT
                 s.hrms_id,
                 s.name,
@@ -3566,7 +3594,7 @@ async def lp_search(q: str = Query(default="")):
             LEFT JOIN designations d ON s.designation_id = d.id
             WHERE s.designation_id IN (5, 6, 7, 8)
               AND s.status = 'Active'
-              AND s.current_office_code = 'CSMT-ML'
+              {office_filter}
               AND s.name LIKE %s
             ORDER BY s.name
             LIMIT 50
@@ -3803,6 +3831,8 @@ async def export_violations_pdf(
         # Style for name cells with CMS ID below
         name_style = ParagraphStyle('NameCell', fontSize=7, leading=8)
         cms_style = ParagraphStyle('CMSCell', fontSize=5, leading=6, textColor=colors.grey)
+        # Style for NCLI cells with text wrapping
+        ncli_style = ParagraphStyle('NCLICell', fontSize=7, leading=8, wordWrap='CJK')
 
         for vtype, (title, subtitle) in section_info.items():
             violations = grouped.get(vtype, [])
@@ -3830,21 +3860,27 @@ async def export_violations_pdf(
                     alp_hrms = str(v.get("alp_hrms_id") or "")
                     alp_cell = Paragraph(f"{alp_name}<br/><font size=5 color='grey'>{alp_hrms}</font>", name_style) if alp_name else ""
 
+                    # Format NCLI cells with text wrapping
+                    ncli_lp = v.get("ncli_name") or ""
+                    ncli_lp_cell = Paragraph(str(ncli_lp), ncli_style) if ncli_lp else ""
+                    ncli_alp = v.get("ncli_alp_name") or ""
+                    ncli_alp_cell = Paragraph(str(ncli_alp), ncli_style) if ncli_alp else ""
+
                     data.append([
                         str(idx),
                         str(wd or ""),
                         str(v.get("train_number") or ""),
                         str(v.get("loco_number") or ""),
                         lp_cell,
-                        str(v.get("ncli_name") or ""),
+                        ncli_lp_cell,
                         alp_cell,
-                        str(v.get("ncli_alp_name") or ""),
+                        ncli_alp_cell,
                         f"{v.get('speed', 0):.1f}",
                         str(v.get("halt_station") or ""),
                     ])
 
-                # Adjusted column widths: SR, DATE, TR, LOCO smaller; names wider
-                table = Table(data, colWidths=[18, 35, 35, 38, 85, 55, 85, 55, 32, 42])
+                # Adjusted column widths: NCLI columns wider (70), SPEED/HALT narrower (28/30)
+                table = Table(data, colWidths=[18, 35, 35, 38, 85, 70, 85, 70, 28, 30])
                 table.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.4, 0.6)),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -5379,7 +5415,7 @@ def _detect_violations(
             speed_1000 = reading_1000["speed"]
 
             # Ghat violation (takes precedence, only UP direction)
-            if in_ghat and speed_1000 > ghat_threshold:
+            if in_ghat and speed_1000 >= ghat_threshold + 1:
                 violations.append({
                     "violation_type": "ghat",
                     "speed": speed_1000,
@@ -5389,7 +5425,7 @@ def _detect_violations(
                     "halt_time": halt.get("logging_time"),
                 })
             # Zone B violation (only if not in ghat and in zone B)
-            elif not in_zone_a and not in_ghat and speed_1000 > zone_b_threshold:
+            elif not in_zone_a and not in_ghat and speed_1000 >= zone_b_threshold + 1:
                 violations.append({
                     "violation_type": "1000m_zone_b",
                     "speed": speed_1000,
@@ -5404,7 +5440,7 @@ def _detect_violations(
         if reading_400 and isinstance(reading_400.get("speed"), (int, float)):
             speed_400 = reading_400["speed"]
 
-            if in_zone_a and speed_400 > zone_a_400m_threshold:
+            if in_zone_a and speed_400 >= zone_a_400m_threshold + 1:
                 violations.append({
                     "violation_type": "400m_zone_a",
                     "speed": speed_400,
@@ -6155,6 +6191,85 @@ async def add_daily_entry(request: Request):
         )
 
 
+@app.post("/api/daily-entries/bulk")
+async def add_daily_entries_bulk(request: Request):
+    """Add multiple daily entries in bulk"""
+    try:
+        user = get_current_user(request)
+        data = await request.json()
+        entries = data.get('entries', [])
+
+        if not entries:
+            return JSONResponse(
+                {"error": "No entries provided", "success": False},
+                status_code=400
+            )
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        added_count = 0
+        errors = []
+
+        for idx, entry in enumerate(entries):
+            working_date = entry.get('working_date')
+            rtis_status = entry.get('rtis_status')
+            train_number = entry.get('train_number', '').strip()
+            loco_number = entry.get('loco_number', '').strip()
+
+            if not working_date or not rtis_status or not train_number or not loco_number:
+                errors.append(f"Entry {idx + 1}: Missing required fields")
+                continue
+
+            if rtis_status not in ['SIM Down', 'Partial Data', 'NON RTIS']:
+                errors.append(f"Entry {idx + 1}: Invalid status '{rtis_status}'")
+                continue
+
+            try:
+                cursor.execute("""
+                    INSERT INTO div_rtis_daily_entries (
+                        working_date, rtis_status, train_number, loco_number,
+                        from_station, to_station, departure_time, arrival_time,
+                        lp_name, lp_hrms_id, ncli_name, alp_name, alp_hrms_id, ncli_alp_name, entered_by
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    working_date,
+                    rtis_status,
+                    train_number,
+                    loco_number,
+                    entry.get('from_station', '').strip() or None,
+                    entry.get('to_station', '').strip() or None,
+                    entry.get('departure_time') or None,
+                    entry.get('arrival_time') or None,
+                    entry.get('lp_name', '').strip() or None,
+                    entry.get('lp_hrms_id', '').strip() or None,
+                    entry.get('ncli_name', '').strip() or None,
+                    entry.get('alp_name', '').strip() or None,
+                    entry.get('alp_hrms_id', '').strip() or None,
+                    entry.get('ncli_alp_name', '').strip() or None,
+                    user.get('name') if user else entry.get('entered_by', '').strip() or None
+                ))
+                added_count += 1
+            except Exception as insert_err:
+                errors.append(f"Entry {idx + 1}: {str(insert_err)}")
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "message": f"Added {added_count} entries successfully",
+            "added_count": added_count,
+            "errors": errors if errors else None
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to add entries: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
 @app.put("/api/daily-entry/{entry_id}")
 async def update_daily_entry(request: Request, entry_id: int):
     """Update a daily entry"""
@@ -6392,8 +6507,8 @@ async def export_daily_summary(request: Request, date: str = Query(...)):
         cursor.close()
         conn.close()
 
-        # Sort by train number
-        entries.sort(key=lambda x: x.get('train_number', '') or '')
+        # Sort by NCLI (CLI name) so same CLI entries are grouped together, then by train number
+        entries.sort(key=lambda x: (x.get('ncli_name') or '', x.get('train_number') or ''))
 
         # Build CSV
         import io
@@ -6452,30 +6567,64 @@ async def get_sim_down_weekly(
     week_start: str = Query(...),
     week_end: str = Query(...)
 ):
-    """Get weekly SIM down report grouped by loco"""
+    """Get weekly SIM down and NON RTIS report grouped by loco with daily status"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
+        # Get all entries for the week (SIM Down and NON RTIS)
         cursor.execute("""
             SELECT
-                loco_number,
-                COUNT(*) as sim_down_count,
-                GROUP_CONCAT(DISTINCT working_date ORDER BY working_date) as dates
-            FROM div_rtis_daily_entries
-            WHERE rtis_status = 'SIM Down'
-              AND working_date BETWEEN %s AND %s
-            GROUP BY loco_number
-            ORDER BY sim_down_count DESC, loco_number
+                e.loco_number,
+                e.working_date,
+                e.rtis_status,
+                COALESCE(l.current_shed, '') as base_shed,
+                COALESCE(l.loco_type, '') as loco_type
+            FROM div_rtis_daily_entries e
+            LEFT JOIN div_cr_locos l ON e.loco_number COLLATE utf8mb4_unicode_ci = l.loco_number COLLATE utf8mb4_unicode_ci
+            WHERE e.rtis_status IN ('SIM Down', 'NON RTIS')
+              AND e.working_date BETWEEN %s AND %s
+            ORDER BY l.current_shed, e.loco_number, e.working_date
         """, [week_start, week_end])
-        locos = cursor.fetchall()
+        entries = cursor.fetchall()
 
-        # Parse dates string to list
-        for loco in locos:
-            if loco['dates']:
-                loco['dates'] = [str(d) for d in loco['dates'].split(',')]
-            else:
-                loco['dates'] = []
+        # Generate list of dates in the week
+        from datetime import datetime, timedelta
+        start = datetime.strptime(week_start, '%Y-%m-%d')
+        end = datetime.strptime(week_end, '%Y-%m-%d')
+        dates = []
+        current = start
+        while current <= end:
+            dates.append(current.strftime('%Y-%m-%d'))
+            current += timedelta(days=1)
+
+        # Group by loco and create daily status map
+        loco_map = {}
+        for entry in entries:
+            loco_num = entry['loco_number']
+            if loco_num not in loco_map:
+                loco_map[loco_num] = {
+                    'loco_number': loco_num,
+                    'base_shed': entry['base_shed'],
+                    'loco_type': entry['loco_type'],
+                    'rly': 'CR',
+                    'daily_status': {d: '' for d in dates},
+                    'sim_down_count': 0,
+                    'non_rtis_count': 0
+                }
+
+            date_str = entry['working_date'].strftime('%Y-%m-%d') if hasattr(entry['working_date'], 'strftime') else str(entry['working_date'])
+            status = entry['rtis_status']
+            loco_map[loco_num]['daily_status'][date_str] = status
+
+            if status == 'SIM Down':
+                loco_map[loco_num]['sim_down_count'] += 1
+            elif status == 'NON RTIS':
+                loco_map[loco_num]['non_rtis_count'] += 1
+
+        # Convert to list and sort by shed, then loco number
+        locos = list(loco_map.values())
+        locos.sort(key=lambda x: (x['base_shed'], x['loco_number']))
 
         cursor.close()
         conn.close()
@@ -6484,6 +6633,7 @@ async def get_sim_down_weekly(
             "success": True,
             "week_start": week_start,
             "week_end": week_end,
+            "dates": dates,
             "locos": locos,
             "total_locos": len(locos)
         }

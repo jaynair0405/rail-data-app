@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS div_rtis_daily_entries (
 
     -- Date and Status
     working_date DATE NOT NULL,
-    rtis_status ENUM('SIM Down', 'NON RTIS') NOT NULL,
+    rtis_status ENUM('SIM Down', 'Partial Data', 'NON RTIS') NOT NULL,
 
     -- Train/Loco Details
     train_number VARCHAR(20) NOT NULL,

@@ -121,6 +121,153 @@
             margin-bottom: 16px;
         }
 
+        /* Quick Entry Form */
+        .quick-entry-section {
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .quick-entry-section h3 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .quick-entry-form {
+            display: grid;
+            grid-template-columns: 120px 1fr 1fr 100px 100px 130px auto;
+            gap: 10px;
+            align-items: end;
+        }
+        .quick-entry-form .form-group {
+            margin-bottom: 0;
+        }
+        .quick-entry-form label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+        .quick-entry-form input,
+        .quick-entry-form select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .quick-entry-form input:focus,
+        .quick-entry-form select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        /* Pending Entries */
+        .pending-section {
+            background: #fffbeb;
+            border: 1px solid #fcd34d;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .pending-section.hidden {
+            display: none;
+        }
+        .pending-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .pending-header h3 {
+            margin: 0;
+            font-size: 14px;
+            color: #92400e;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .pending-count {
+            background: #f59e0b;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .pending-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .pending-table th {
+            background: #fef3c7;
+            padding: 8px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            color: #92400e;
+            border-bottom: 1px solid #fcd34d;
+        }
+        .pending-table td {
+            padding: 8px;
+            border-bottom: 1px solid #fcd34d;
+        }
+        .pending-table tr:last-child td {
+            border-bottom: none;
+        }
+        .btn-remove {
+            background: none;
+            border: none;
+            color: var(--danger);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 4px;
+        }
+        .btn-remove:hover {
+            color: #b91c1c;
+        }
+
+        /* Edit mode styling */
+        .quick-entry-section.edit-mode {
+            background: #eff6ff;
+            border-color: var(--primary);
+        }
+        .quick-entry-section.edit-mode h3 {
+            color: var(--primary);
+        }
+        .btn-cancel {
+            background: #6b7280;
+            color: white;
+            border-color: #6b7280;
+        }
+        .btn-cancel:hover {
+            background: #4b5563;
+        }
+
+        @media (max-width: 1200px) {
+            .quick-entry-form {
+                grid-template-columns: repeat(4, 1fr);
+            }
+            .quick-entry-form .btn-add {
+                grid-column: span 4;
+            }
+        }
+        @media (max-width: 768px) {
+            .quick-entry-form {
+                grid-template-columns: 1fr 1fr;
+            }
+            .quick-entry-form .btn-add {
+                grid-column: span 2;
+            }
+        }
+
         /* Table */
         .table-card {
             background: var(--surface);
@@ -294,11 +441,85 @@
             </div>
         </div>
 
+        <!-- Quick Entry Form -->
+        <div class="quick-entry-section" id="quickEntrySection">
+            <h3 id="qeHeader"><i class="fas fa-plus-circle"></i> Quick Add Entry</h3>
+            <div class="quick-entry-form">
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="qeDate">
+                </div>
+                <div class="form-group">
+                    <label>LP Name</label>
+                    <input type="text" id="qeLpName" list="qeLpOptions" placeholder="Type to search" autocomplete="off">
+                    <datalist id="qeLpOptions"></datalist>
+                </div>
+                <div class="form-group">
+                    <label>ALP Name</label>
+                    <input type="text" id="qeAlpName" list="qeAlpOptions" placeholder="Type to search" autocomplete="off">
+                    <datalist id="qeAlpOptions"></datalist>
+                </div>
+                <div class="form-group">
+                    <label>Train No.</label>
+                    <input type="text" id="qeTrain" placeholder="e.g., 12345">
+                </div>
+                <div class="form-group">
+                    <label>Loco No.</label>
+                    <input type="text" id="qeLoco" placeholder="e.g., 30667" list="qeLocoList">
+                    <datalist id="qeLocoList"></datalist>
+                </div>
+                <div class="form-group">
+                    <label>Status</label>
+                    <select id="qeStatus">
+                        <option value="SIM Down">SIM Down</option>
+                        <option value="Partial Data">Partial Data</option>
+                        <option value="NON RTIS">NON RTIS</option>
+                    </select>
+                </div>
+                <div class="form-group" style="display: flex; gap: 6px; align-items: end;">
+                    <button class="btn btn-primary btn-add" id="qeActionBtn" onclick="handleQuickEntryAction()">
+                        <i class="fas fa-plus"></i> Add
+                    </button>
+                    <button class="btn btn-cancel" id="qeCancelBtn" onclick="cancelEdit()" style="display: none;">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pending Entries -->
+        <div class="pending-section hidden" id="pendingSection">
+            <div class="pending-header">
+                <h3><i class="fas fa-clock"></i> Pending Entries <span class="pending-count" id="pendingCount">0</span></h3>
+                <button class="btn btn-success" onclick="saveAllPending()">
+                    <i class="fas fa-save"></i> Save All Entries
+                </button>
+            </div>
+            <table class="pending-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Status</th>
+                        <th>Train</th>
+                        <th>Loco</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>LP Name</th>
+                        <th>LP HRMS</th>
+                        <th>NCLI</th>
+                        <th>ALP Name</th>
+                        <th>ALP HRMS</th>
+                        <th>NCLI ALP</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="pendingTableBody">
+                </tbody>
+            </table>
+        </div>
+
         <!-- Action Buttons -->
         <div class="action-bar">
-            <button class="btn btn-primary" onclick="openAddModal()">
-                <i class="fas fa-plus"></i> Add Entry
-            </button>
             <a href="sim-down-weekly.html" class="btn btn-warning">
                 <i class="fas fa-calendar-week"></i> Weekly SIM Down Report
             </a>
@@ -360,10 +581,7 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label>Train Number *</label>
-                        <div style="display: flex; gap: 6px;">
-                            <input type="text" id="entryTrain" placeholder="e.g., 12345" style="flex: 1;">
-                            <button type="button" class="btn btn-sm" onclick="fetchTrainStations()" title="Lookup"><i class="fas fa-search"></i></button>
-                        </div>
+                        <input type="text" id="entryTrain" placeholder="e.g., 12345">
                     </div>
                     <div class="form-group">
                         <label>Loco Number *</label>
@@ -427,13 +645,22 @@
     <script>
         const API_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis' : '';
         let currentDate = '';
+        let pendingEntries = [];
+        let editingEntryId = null; // Track entry being edited (null = add mode)
+
+        // Quick entry form state
+        let qeLpData = null;  // Stores resolved LP data
+        let qeAlpData = null; // Stores resolved ALP data
+        let qeTrainData = null; // Stores train from/to stations
 
         document.addEventListener('DOMContentLoaded', () => {
             // Set default date to today
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('selectedDate').value = today;
+            document.getElementById('qeDate').value = today;
             currentDate = today;
             loadSummary();
+            setupQuickEntryListeners();
         });
 
         async function loadSummary() {
@@ -538,26 +765,32 @@
                 if (data.success) {
                     const entry = data.entries.find(e => e.id === entryId);
                     if (entry) {
-                        document.getElementById('modalTitle').textContent = 'Edit Entry';
-                        document.getElementById('editEntryId').value = entryId;
+                        // Set edit mode
+                        editingEntryId = entryId;
+                        setEditMode(true);
+
                         // Format date for input (YYYY-MM-DD)
                         let workingDate = entry.working_date || '';
                         if (workingDate && typeof workingDate === 'string' && workingDate.includes('T')) {
                             workingDate = workingDate.split('T')[0];
                         }
-                        document.getElementById('entryDate').value = workingDate;
-                        document.getElementById('entryStatus').value = entry.rtis_status;
-                        document.getElementById('entryTrain').value = entry.train_number || '';
-                        document.getElementById('entryLoco').value = entry.loco_number || '';
-                        document.getElementById('entryFrom').value = entry.from_station || '';
-                        document.getElementById('entryTo').value = entry.to_station || '';
-                        document.getElementById('entryLpName').value = entry.lp_name || '';
-                        document.getElementById('entryLpHrms').value = entry.lp_hrms_id || '';
-                        document.getElementById('entryNcli').value = entry.ncli_name || '';
-                        document.getElementById('entryAlpName').value = entry.alp_name || '';
-                        document.getElementById('entryAlpHrms').value = entry.alp_hrms_id || '';
-                        document.getElementById('entryNcliAlp').value = entry.ncli_alp_name || '';
-                        openModal('entryModal');
+
+                        // Populate quick entry form
+                        document.getElementById('qeDate').value = workingDate;
+                        document.getElementById('qeStatus').value = entry.rtis_status;
+                        document.getElementById('qeTrain').value = entry.train_number || '';
+                        document.getElementById('qeLoco').value = entry.loco_number || '';
+                        document.getElementById('qeLpName').value = entry.lp_name || '';
+                        document.getElementById('qeAlpName').value = entry.alp_name || '';
+
+                        // Store the existing data for auto-fill fields
+                        qeTrainData = { from_station: entry.from_station, to_station: entry.to_station };
+                        qeLpData = { name: entry.lp_name, hrms_id: entry.lp_hrms_id, cli_name: entry.ncli_name };
+                        qeAlpData = { name: entry.alp_name, hrms_id: entry.alp_hrms_id, cli_name: entry.ncli_alp_name };
+
+                        // Scroll to the form
+                        document.getElementById('quickEntrySection').scrollIntoView({ behavior: 'smooth' });
+                        showToast('Edit mode: Modify fields and click Update', 'success');
                     } else {
                         showToast('Entry not found', 'error');
                     }
@@ -567,6 +800,139 @@
             } catch (e) {
                 console.error('Edit entry error:', e);
                 showToast('Failed to load entry', 'error');
+            }
+        }
+
+        function setEditMode(isEdit) {
+            const section = document.getElementById('quickEntrySection');
+            const header = document.getElementById('qeHeader');
+            const actionBtn = document.getElementById('qeActionBtn');
+            const cancelBtn = document.getElementById('qeCancelBtn');
+
+            if (isEdit) {
+                section.classList.add('edit-mode');
+                header.innerHTML = '<i class="fas fa-edit"></i> Edit Entry';
+                actionBtn.innerHTML = '<i class="fas fa-save"></i> Update';
+                actionBtn.classList.remove('btn-primary');
+                actionBtn.classList.add('btn-success');
+                cancelBtn.style.display = 'inline-flex';
+            } else {
+                section.classList.remove('edit-mode');
+                header.innerHTML = '<i class="fas fa-plus-circle"></i> Quick Add Entry';
+                actionBtn.innerHTML = '<i class="fas fa-plus"></i> Add';
+                actionBtn.classList.remove('btn-success');
+                actionBtn.classList.add('btn-primary');
+                cancelBtn.style.display = 'none';
+                editingEntryId = null;
+            }
+        }
+
+        function cancelEdit() {
+            setEditMode(false);
+            clearQuickEntryForm();
+            // Reset date to today
+            document.getElementById('qeDate').value = new Date().toISOString().split('T')[0];
+            showToast('Edit cancelled', '');
+        }
+
+        async function handleQuickEntryAction() {
+            if (editingEntryId) {
+                await updateEntry();
+            } else {
+                await addToPending();
+            }
+        }
+
+        async function updateEntry() {
+            const date = document.getElementById('qeDate').value;
+            const lpNameField = document.getElementById('qeLpName').value.trim();
+            const alpNameField = document.getElementById('qeAlpName').value.trim();
+            const train = document.getElementById('qeTrain').value.trim();
+            const loco = document.getElementById('qeLoco').value.trim();
+            const status = document.getElementById('qeStatus').value;
+
+            if (!date || !train || !loco) {
+                showToast('Date, Train, and Loco are required', 'error');
+                return;
+            }
+
+            // Fetch latest train data if train number changed
+            let trainData = qeTrainData;
+            if (train && (!trainData || trainData.train_number !== train)) {
+                try {
+                    const res = await fetch(`${API_BASE}/train_info?train_number=${encodeURIComponent(train)}`);
+                    const data = await res.json();
+                    if (res.ok && data.from_station) {
+                        trainData = data;
+                    }
+                } catch (e) {}
+            }
+
+            // Resolve LP if selected from datalist but data not yet loaded
+            let lpData = qeLpData;
+            if (lpNameField) {
+                const lpRecord = qeLpLabelToHrms.get(lpNameField);
+                if (lpRecord && lpRecord.hrms_id) {
+                    // Fetch full LP details to ensure we have cli_name
+                    try {
+                        const res = await fetch(`${API_BASE}/lp/${encodeURIComponent(lpRecord.hrms_id)}`);
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            lpData = data.data;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            // Resolve ALP if selected from datalist
+            let alpData = qeAlpData;
+            if (alpNameField) {
+                const alpRecord = qeAlpLabelToHrms.get(alpNameField);
+                if (alpRecord && alpRecord.hrms_id) {
+                    try {
+                        const res = await fetch(`${API_BASE}/alp/${encodeURIComponent(alpRecord.hrms_id)}`);
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            alpData = data.data;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            const payload = {
+                working_date: date,
+                rtis_status: status,
+                train_number: train,
+                loco_number: loco,
+                from_station: trainData?.from_station || '',
+                to_station: trainData?.to_station || '',
+                lp_name: lpData?.name || '',
+                lp_hrms_id: lpData?.hrms_id || '',
+                ncli_name: lpData?.cli_name || '',
+                alp_name: alpData?.name || '',
+                alp_hrms_id: alpData?.hrms_id || '',
+                ncli_alp_name: alpData?.cli_name || ''
+            };
+
+            try {
+                const res = await fetch(`${API_BASE}/api/daily-entry/${editingEntryId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showToast('Entry updated successfully', 'success');
+                    setEditMode(false);
+                    clearQuickEntryForm();
+                    document.getElementById('qeDate').value = new Date().toISOString().split('T')[0];
+                    loadSummary();
+                } else {
+                    showToast(data.error || 'Failed to update entry', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to update entry', 'error');
             }
         }
 
@@ -638,11 +1004,11 @@
             window.location.href = `${API_BASE}/api/export-daily-summary?date=${currentDate}`;
         }
 
-        // Fetch train from/to stations
-        async function fetchTrainStations() {
+        // Fetch train from/to stations (silent=true suppresses toasts for auto-fetch)
+        async function fetchTrainStations(silent = false) {
             const trainNum = document.getElementById('entryTrain').value.trim();
             if (!trainNum) {
-                showToast('Enter train number first', 'error');
+                if (!silent) showToast('Enter train number first', 'error');
                 return;
             }
 
@@ -653,19 +1019,32 @@
                 if (res.ok && data.from_station) {
                     document.getElementById('entryFrom').value = data.from_station || '';
                     document.getElementById('entryTo').value = data.to_station || '';
-                    showToast('Stations loaded', 'success');
+                    if (!silent) showToast('Stations loaded', 'success');
                 } else {
-                    showToast(data.error || 'Train not found', 'error');
+                    if (!silent) showToast(data.error || 'Train not found', 'error');
                 }
             } catch (e) {
-                showToast('Failed to lookup train', 'error');
+                if (!silent) showToast('Failed to lookup train', 'error');
             }
         }
 
-        // Auto-fetch on Enter key in train field
+        // Auto-fetch train stations on input (debounced)
+        let trainTimeout = null;
+        document.getElementById('entryTrain').addEventListener('input', function() {
+            clearTimeout(trainTimeout);
+            const trainNum = this.value.trim();
+            if (trainNum.length < 4) return; // Train numbers are typically 5 digits
+
+            trainTimeout = setTimeout(() => {
+                fetchTrainStations(true); // silent auto-fetch
+            }, 500); // 500ms debounce
+        });
+
+        // Also fetch on Enter key
         document.getElementById('entryTrain').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
+                clearTimeout(trainTimeout);
                 fetchTrainStations();
             }
         });
@@ -702,7 +1081,7 @@
 
         async function refreshLpDatalist(q) {
             try {
-                const res = await fetch(`/api/division/rtis/lp-search?q=${encodeURIComponent(q || '')}`);
+                const res = await fetch(`${API_BASE}/lp-search?q=${encodeURIComponent(q || '')}`);
                 const data = await res.json();
                 if (!res.ok || !data.success) return;
 
@@ -724,7 +1103,7 @@
 
         async function resolveLp(hrms) {
             try {
-                const res = await fetch(`/api/division/rtis/lp/${encodeURIComponent(hrms)}`);
+                const res = await fetch(`${API_BASE}/lp/${encodeURIComponent(hrms)}`);
                 const data = await res.json();
                 if (!res.ok || !data.success) {
                     console.warn('LP resolve failed', data);
@@ -836,6 +1215,282 @@
             toast.textContent = message;
             toast.className = 'toast show ' + type;
             setTimeout(() => { toast.className = 'toast'; }, 3000);
+        }
+
+        // =====================
+        // Quick Entry Functions
+        // =====================
+
+        let qeLpSearchTimeout = null;
+        let qeLpLabelToHrms = new Map();
+        let qeAlpSearchTimeout = null;
+        let qeAlpLabelToHrms = new Map();
+        let qeLocoTimeout = null;
+        let qeTrainTimeout = null;
+
+        function setupQuickEntryListeners() {
+            // LP Search
+            document.getElementById('qeLpName').addEventListener('input', async function(e) {
+                const val = e.target.value || '';
+                qeLpData = null;
+
+                clearTimeout(qeLpSearchTimeout);
+                qeLpSearchTimeout = setTimeout(async () => {
+                    if (val.trim().length >= 2) {
+                        try {
+                            const res = await fetch(`${API_BASE}/lp-search?q=${encodeURIComponent(val.trim())}`);
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                const dl = document.getElementById('qeLpOptions');
+                                dl.innerHTML = '';
+                                qeLpLabelToHrms.clear();
+                                (data.data || []).forEach(r => {
+                                    const label = `${r.name} (${r.hrms_id}) — ${r.current_cms_id || 'CMS?'}`;
+                                    const opt = document.createElement('option');
+                                    opt.value = label;
+                                    dl.appendChild(opt);
+                                    qeLpLabelToHrms.set(label, r);
+                                });
+                            }
+                        } catch (e) { console.warn('QE LP search failed', e); }
+                    }
+                }, 250);
+
+                // Check if user selected from datalist
+                const lpRecord = qeLpLabelToHrms.get(val);
+                if (lpRecord) {
+                    qeLpData = lpRecord;
+                }
+            });
+
+            // ALP Search
+            document.getElementById('qeAlpName').addEventListener('input', async function(e) {
+                const val = e.target.value || '';
+                qeAlpData = null;
+
+                clearTimeout(qeAlpSearchTimeout);
+                qeAlpSearchTimeout = setTimeout(async () => {
+                    if (val.trim().length >= 2) {
+                        try {
+                            const res = await fetch(`${API_BASE}/alp-search?q=${encodeURIComponent(val.trim())}`);
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                const dl = document.getElementById('qeAlpOptions');
+                                dl.innerHTML = '';
+                                qeAlpLabelToHrms.clear();
+                                (data.data || []).forEach(r => {
+                                    const label = r.current_cms_id
+                                        ? `${r.name} (${r.hrms_id}) — ${r.current_cms_id}`
+                                        : `${r.name} (${r.hrms_id})`;
+                                    const opt = document.createElement('option');
+                                    opt.value = label;
+                                    dl.appendChild(opt);
+                                    qeAlpLabelToHrms.set(label, r);
+                                });
+                            }
+                        } catch (e) { console.warn('QE ALP search failed', e); }
+                    }
+                }, 250);
+
+                // Check if user selected from datalist
+                const alpRecord = qeAlpLabelToHrms.get(val);
+                if (alpRecord) {
+                    qeAlpData = alpRecord;
+                }
+            });
+
+            // Train number - auto fetch stations
+            document.getElementById('qeTrain').addEventListener('input', function() {
+                clearTimeout(qeTrainTimeout);
+                const trainNum = this.value.trim();
+                qeTrainData = null;
+
+                if (trainNum.length >= 4) {
+                    qeTrainTimeout = setTimeout(async () => {
+                        try {
+                            const res = await fetch(`${API_BASE}/train_info?train_number=${encodeURIComponent(trainNum)}`);
+                            const data = await res.json();
+                            if (res.ok && data.from_station) {
+                                qeTrainData = data;
+                            }
+                        } catch (e) { console.warn('QE train lookup failed', e); }
+                    }, 500);
+                }
+            });
+
+            // Loco search
+            document.getElementById('qeLoco').addEventListener('input', function() {
+                clearTimeout(qeLocoTimeout);
+                const query = this.value.trim();
+                if (query.length < 2) return;
+
+                qeLocoTimeout = setTimeout(async () => {
+                    try {
+                        const res = await fetch(`${API_BASE}/api/locos/search/${query}`);
+                        const data = await res.json();
+                        if (data.success) {
+                            const dl = document.getElementById('qeLocoList');
+                            dl.innerHTML = data.locos.map(l =>
+                                `<option value="${l.loco_number}">${l.loco_number} (${l.current_shed})</option>`
+                            ).join('');
+                        }
+                    } catch (e) {}
+                }, 300);
+            });
+        }
+
+        async function addToPending() {
+            const date = document.getElementById('qeDate').value;
+            const lpNameField = document.getElementById('qeLpName').value.trim();
+            const alpNameField = document.getElementById('qeAlpName').value.trim();
+            const train = document.getElementById('qeTrain').value.trim();
+            const loco = document.getElementById('qeLoco').value.trim();
+            const status = document.getElementById('qeStatus').value;
+
+            if (!date || !train || !loco) {
+                showToast('Date, Train, and Loco are required', 'error');
+                return;
+            }
+
+            // Resolve LP if selected from datalist but data not yet loaded
+            let lpData = qeLpData;
+            if (!lpData && lpNameField) {
+                const lpRecord = qeLpLabelToHrms.get(lpNameField);
+                if (lpRecord) {
+                    // Fetch full LP details
+                    try {
+                        const res = await fetch(`${API_BASE}/lp/${encodeURIComponent(lpRecord.hrms_id)}`);
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            lpData = data.data;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            // Resolve ALP if selected from datalist
+            let alpData = qeAlpData;
+            if (!alpData && alpNameField) {
+                const alpRecord = qeAlpLabelToHrms.get(alpNameField);
+                if (alpRecord) {
+                    try {
+                        const res = await fetch(`${API_BASE}/alp/${encodeURIComponent(alpRecord.hrms_id)}`);
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            alpData = data.data;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            // Fetch train info if not already loaded
+            let trainData = qeTrainData;
+            if (!trainData && train) {
+                try {
+                    const res = await fetch(`${API_BASE}/train_info?train_number=${encodeURIComponent(train)}`);
+                    const data = await res.json();
+                    if (res.ok && data.from_station) {
+                        trainData = data;
+                    }
+                } catch (e) {}
+            }
+
+            // Build entry object
+            const entry = {
+                id: Date.now(), // temporary ID for UI
+                working_date: date,
+                rtis_status: status,
+                train_number: train,
+                loco_number: loco,
+                from_station: trainData?.from_station || '',
+                to_station: trainData?.to_station || '',
+                lp_name: lpData?.name || '',
+                lp_hrms_id: lpData?.hrms_id || '',
+                ncli_name: lpData?.cli_name || '',
+                alp_name: alpData?.name || '',
+                alp_hrms_id: alpData?.hrms_id || '',
+                ncli_alp_name: alpData?.cli_name || ''
+            };
+
+            pendingEntries.push(entry);
+            renderPendingTable();
+            clearQuickEntryForm();
+            showToast('Entry added to pending list', 'success');
+        }
+
+        function clearQuickEntryForm() {
+            // Keep date and status, clear others
+            document.getElementById('qeLpName').value = '';
+            document.getElementById('qeAlpName').value = '';
+            document.getElementById('qeTrain').value = '';
+            document.getElementById('qeLoco').value = '';
+            qeLpData = null;
+            qeAlpData = null;
+            qeTrainData = null;
+        }
+
+        function removePendingEntry(id) {
+            pendingEntries = pendingEntries.filter(e => e.id !== id);
+            renderPendingTable();
+        }
+
+        function renderPendingTable() {
+            const section = document.getElementById('pendingSection');
+            const tbody = document.getElementById('pendingTableBody');
+            const countEl = document.getElementById('pendingCount');
+
+            if (pendingEntries.length === 0) {
+                section.classList.add('hidden');
+                return;
+            }
+
+            section.classList.remove('hidden');
+            countEl.textContent = pendingEntries.length;
+
+            tbody.innerHTML = pendingEntries.map(e => `
+                <tr>
+                    <td>${e.working_date}</td>
+                    <td><span class="badge ${getStatusClass(e.rtis_status)}">${e.rtis_status}</span></td>
+                    <td>${e.train_number}</td>
+                    <td class="loco-number">${e.loco_number}</td>
+                    <td>${e.from_station || '-'}</td>
+                    <td>${e.to_station || '-'}</td>
+                    <td>${e.lp_name || '-'}</td>
+                    <td>${e.lp_hrms_id || '-'}</td>
+                    <td>${e.ncli_name || '-'}</td>
+                    <td>${e.alp_name || '-'}</td>
+                    <td>${e.alp_hrms_id || '-'}</td>
+                    <td>${e.ncli_alp_name || '-'}</td>
+                    <td><button class="btn-remove" onclick="removePendingEntry(${e.id})" title="Remove"><i class="fas fa-times"></i></button></td>
+                </tr>
+            `).join('');
+        }
+
+        async function saveAllPending() {
+            if (pendingEntries.length === 0) {
+                showToast('No pending entries to save', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/daily-entries/bulk`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ entries: pendingEntries })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    pendingEntries = [];
+                    renderPendingTable();
+                    loadSummary();
+                } else {
+                    showToast(data.error || 'Failed to save entries', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to save entries', 'error');
+            }
         }
     </script>
 </body>

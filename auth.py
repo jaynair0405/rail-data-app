@@ -3,6 +3,7 @@ Authentication Middleware for FastAPI
 Validates sessions stored in MySQL by Node.js express-session
 """
 import json
+import os
 from datetime import datetime
 from typing import Optional
 from fastapi import Request, HTTPException, status
@@ -10,6 +11,18 @@ from fastapi.responses import RedirectResponse
 import mysql.connector
 from db_config import get_db_connection
 from urllib.parse import unquote
+
+# Local dev bypass - set LOCAL_DEV=true in .env to skip auth
+LOCAL_DEV = os.getenv("LOCAL_DEV", "").lower() == "true"
+LOCAL_DEV_USER = {
+    "id": 1,
+    "username": "dev_user",
+    "full_name": "Local Developer",
+    "role": "admin",
+    "realm": "division",
+    "div_office_code": "CSMT-ML",
+    "can_access_rtis": True
+}
 
 def parse_session_cookie(cookie_header: str) -> Optional[str]:
     """
@@ -128,6 +141,11 @@ def get_current_user(request: Request) -> Optional[dict]:
         User dict with: id, username, full_name, role, realm, div_office_code, can_access_rtis
         Or None if not authenticated
     """
+    # Local dev bypass
+    if LOCAL_DEV:
+        print("[AUTH] LOCAL_DEV mode - bypassing authentication")
+        return LOCAL_DEV_USER
+
     print("[AUTH] raw cookie connect.sid =", request.cookies.get("connect.sid"))
     # Get cookie header
     cookie_header = request.headers.get('cookie')
