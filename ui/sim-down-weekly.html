@@ -79,12 +79,33 @@
             flex-wrap: wrap;
         }
         .week-picker label { font-weight: 600; font-size: 14px; }
-        .week-picker input {
+        .week-picker input[type="date"] {
             padding: 8px 12px;
             border: 1px solid var(--border);
             border-radius: 6px;
             font-size: 14px;
         }
+        .flexible-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #f8fafc;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            font-size: 13px;
+            user-select: none;
+        }
+        .flexible-toggle:hover { background: #f1f5f9; }
+        .flexible-toggle input { cursor: pointer; }
+        .flexible-toggle.active {
+            background: #dbeafe;
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .week-nav { display: flex; gap: 8px; }
+        .week-nav.hidden { display: none; }
 
         /* Legend */
         .legend {
@@ -255,13 +276,19 @@
 
         <!-- Week Picker -->
         <div class="week-picker">
-            <label><i class="fas fa-calendar"></i> Select Week:</label>
-            <input type="date" id="weekStartInput" onchange="updateWeekFromDate()">
+            <label id="dateRangeLabel"><i class="fas fa-calendar"></i> Select Week:</label>
+            <input type="date" id="weekStartInput" onchange="handleStartDateChange()">
             <span>to</span>
-            <input type="date" id="weekEndInput" onchange="loadReport()">
-            <button class="btn" onclick="goToPreviousWeek()"><i class="fas fa-chevron-left"></i> Prev</button>
-            <button class="btn" onclick="goToCurrentWeek()">This Week</button>
-            <button class="btn" onclick="goToNextWeek()">Next <i class="fas fa-chevron-right"></i></button>
+            <input type="date" id="weekEndInput" onchange="handleEndDateChange()">
+            <label class="flexible-toggle" id="flexibleToggle">
+                <input type="checkbox" id="flexibleDatesCheckbox" onchange="toggleFlexibleDates()">
+                <span>Flexible dates</span>
+            </label>
+            <div class="week-nav" id="weekNav">
+                <button class="btn" onclick="goToPreviousWeek()"><i class="fas fa-chevron-left"></i> Prev</button>
+                <button class="btn" onclick="goToCurrentWeek()">This Week</button>
+                <button class="btn" onclick="goToNextWeek()">Next <i class="fas fa-chevron-right"></i></button>
+            </div>
         </div>
 
         <!-- Legend -->
@@ -328,37 +355,92 @@
         let currentWeekEnd = '';
         let reportData = [];
         let weekDates = [];
+        let flexibleMode = false;
 
         document.addEventListener('DOMContentLoaded', () => {
             goToCurrentWeek();
         });
 
-        function getSaturday(d) {
-            const date = new Date(d);
-            const day = date.getDay();
-            const daysBack = (day + 1) % 7;
-            const saturday = new Date(date);
-            saturday.setDate(date.getDate() - daysBack);
-            return saturday;
+        function toggleFlexibleDates() {
+            flexibleMode = document.getElementById('flexibleDatesCheckbox').checked;
+            const weekNav = document.getElementById('weekNav');
+            const flexibleToggle = document.getElementById('flexibleToggle');
+            const dateRangeLabel = document.getElementById('dateRangeLabel');
+
+            if (flexibleMode) {
+                weekNav.classList.add('hidden');
+                flexibleToggle.classList.add('active');
+                dateRangeLabel.innerHTML = '<i class="fas fa-calendar-alt"></i> Select Range:';
+            } else {
+                weekNav.classList.remove('hidden');
+                flexibleToggle.classList.remove('active');
+                dateRangeLabel.innerHTML = '<i class="fas fa-calendar"></i> Select Week:';
+                goToCurrentWeek();
+            }
         }
 
-        function getFriday(saturday) {
-            const friday = new Date(saturday);
-            friday.setDate(saturday.getDate() + 6);
-            return friday;
+        function handleStartDateChange() {
+            if (flexibleMode) {
+                // In flexible mode, just reload with whatever dates are selected
+                loadReport();
+            } else {
+                // In week mode, snap to Thu-Wed
+                updateWeekFromDate();
+            }
+        }
+
+        function handleEndDateChange() {
+            if (flexibleMode) {
+                // In flexible mode, just reload
+                loadReport();
+            }
+            // In week mode, end date change is ignored (auto-calculated)
+        }
+
+        function getThursday(d) {
+            // Parse date string safely to avoid timezone issues
+            let date;
+            if (typeof d === 'string') {
+                const parts = d.split('-');
+                date = new Date(parts[0], parts[1] - 1, parts[2]);
+            } else {
+                date = new Date(d);
+            }
+            const day = date.getDay();
+            // Thursday = 4. Calculate days to go back to reach Thursday
+            const daysBack = (day - 4 + 7) % 7;
+            const thursday = new Date(date);
+            thursday.setDate(date.getDate() - daysBack);
+            return thursday;
+        }
+
+        function getWednesday(thursday) {
+            const wednesday = new Date(thursday);
+            wednesday.setDate(thursday.getDate() + 6);
+            return wednesday;
         }
 
         function formatDate(date) {
-            return date.toISOString().split('T')[0];
+            // Use local date components to avoid UTC conversion
+            const year = date.getFullYear();
+            const month = (date.getMonth() + 1).toString().padStart(2, '0');
+            const day = date.getDate().toString().padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function parseLocalDate(dateStr) {
+            // Parse YYYY-MM-DD string as local date (not UTC)
+            const parts = dateStr.split('-');
+            return new Date(parts[0], parts[1] - 1, parts[2]);
         }
 
         function formatDisplayDate(dateStr) {
-            const d = new Date(dateStr);
+            const d = parseLocalDate(dateStr);
             return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }).replace(' ', '-');
         }
 
         function formatHeaderDate(dateStr) {
-            const d = new Date(dateStr);
+            const d = parseLocalDate(dateStr);
             const day = d.getDate().toString().padStart(2, '0');
             const month = (d.getMonth() + 1).toString().padStart(2, '0');
             const year = d.getFullYear().toString().slice(-2);
@@ -366,10 +448,10 @@
         }
 
         function setWeek(startDate) {
-            const saturday = getSaturday(startDate);
-            const friday = getFriday(saturday);
-            currentWeekStart = formatDate(saturday);
-            currentWeekEnd = formatDate(friday);
+            const thursday = getThursday(startDate);
+            const wednesday = getWednesday(thursday);
+            currentWeekStart = formatDate(thursday);
+            currentWeekEnd = formatDate(wednesday);
             document.getElementById('weekStartInput').value = currentWeekStart;
             document.getElementById('weekEndInput').value = currentWeekEnd;
             loadReport();
@@ -380,13 +462,15 @@
         }
 
         function goToPreviousWeek() {
-            const current = new Date(currentWeekStart);
+            const parts = currentWeekStart.split('-');
+            const current = new Date(parts[0], parts[1] - 1, parts[2]);
             current.setDate(current.getDate() - 7);
             setWeek(current);
         }
 
         function goToNextWeek() {
-            const current = new Date(currentWeekStart);
+            const parts = currentWeekStart.split('-');
+            const current = new Date(parts[0], parts[1] - 1, parts[2]);
             current.setDate(current.getDate() + 7);
             setWeek(current);
         }
@@ -394,7 +478,7 @@
         function updateWeekFromDate() {
             const selectedDate = document.getElementById('weekStartInput').value;
             if (selectedDate) {
-                setWeek(new Date(selectedDate));
+                setWeek(selectedDate);
             }
         }
 

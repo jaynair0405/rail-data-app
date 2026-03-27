@@ -118,6 +118,8 @@
         .action-bar {
             display: flex;
             gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
             margin-bottom: 16px;
         }
 
@@ -332,6 +334,9 @@
             max-height: 90vh;
             overflow-y: auto;
         }
+        .modal.report-modal {
+            max-width: 860px;
+        }
 
         .modal-header {
             padding: 16px 20px;
@@ -369,6 +374,102 @@
             gap: 8px;
         }
 
+        /* Officer Report */
+        .report-helper {
+            margin: 0 0 16px 0;
+            font-size: 13px;
+            color: var(--text-light);
+        }
+        .report-preview-card {
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+            overflow: hidden;
+        }
+        .report-preview-header {
+            padding: 20px 22px 14px 22px;
+            border-bottom: 1px solid var(--border);
+            background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
+        }
+        .report-preview-header h4 {
+            margin: 0;
+            font-size: 22px;
+            color: #0f172a;
+        }
+        .report-meta-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            padding: 16px 22px 0 22px;
+        }
+        .report-meta-item {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: white;
+            padding: 12px 14px;
+        }
+        .report-meta-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-light);
+            margin-bottom: 6px;
+        }
+        .report-meta-value {
+            font-size: 22px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .report-table-wrap {
+            padding: 16px 22px 22px 22px;
+        }
+        .report-table-title {
+            margin: 0 0 8px 0;
+            font-size: 13px;
+            font-weight: 700;
+            color: #334155;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .report-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .report-table th,
+        .report-table td {
+            padding: 11px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+        }
+        .report-table th {
+            background: #f8fafc;
+            color: var(--text-light);
+            text-transform: uppercase;
+            font-size: 12px;
+        }
+        .report-table tr:last-child td {
+            border-bottom: none;
+        }
+        .report-table td:last-child,
+        .report-table th:last-child {
+            text-align: right;
+            font-family: monospace;
+            font-weight: 700;
+            color: #0f172a;
+            width: 104px;
+        }
+        .report-footer-note {
+            margin-top: 6px;
+            font-size: 13px;
+            color: var(--text-light);
+            text-align: right;
+        }
+
         /* Loading / Empty */
         .loading, .empty-state {
             text-align: center;
@@ -397,6 +498,9 @@
         @media (max-width: 768px) {
             .stats-row { grid-template-columns: repeat(2, 1fr); }
             .form-row { grid-template-columns: 1fr; }
+            .report-meta-grid { grid-template-columns: 1fr; }
+            .report-table td:last-child,
+            .report-table th:last-child { width: 72px; }
         }
     </style>
 </head>
@@ -524,6 +628,9 @@
                 <i class="fas fa-calendar-week"></i> Weekly SIM Down Report
             </a>
             <div style="flex: 1;"></div>
+            <button class="btn btn-primary" onclick="openOfficerReportModal()">
+                <i class="fas fa-file-lines"></i> Preview Officer Report
+            </button>
             <button class="btn btn-success" onclick="exportCSV()">
                 <i class="fas fa-download"></i> Export CSV
             </button>
@@ -639,12 +746,40 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="officerReportModal">
+        <div class="modal report-modal">
+            <div class="modal-header">
+                <h3>Officer Report Preview</h3>
+                <button class="modal-close" onclick="closeModal('officerReportModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="report-helper">Review the report before copying. WhatsApp may not preserve pasted text-table alignment, so use the image options for a fixed professional layout.</p>
+                <div id="officerReportPreview"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeModal('officerReportModal')">Close</button>
+                <button class="btn" onclick="copyOfficerPlainReport()">
+                    <i class="fas fa-copy"></i> Copy Plain Text
+                </button>
+                <button class="btn" onclick="downloadOfficerReportImage()">
+                    <i class="fas fa-download"></i> Download PNG
+                </button>
+                <button class="btn btn-primary" onclick="copyOfficerReportImage()">
+                    <i class="fas fa-image"></i> Copy Report Image
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast" id="toast"></div>
 
     <script>
         const API_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis' : '';
         let currentDate = '';
+        let currentSummary = null;
+        let currentEntries = [];
+        let currentOfficerReport = null;
         let pendingEntries = [];
         let editingEntryId = null; // Track entry being edited (null = add mode)
 
@@ -674,12 +809,18 @@
                 const data = await res.json();
 
                 if (data.success) {
-                    updateStats(data.summary);
-                    renderTable(data.entries);
+                    currentSummary = data.summary || {};
+                    currentEntries = data.entries || [];
+                    updateStats(currentSummary);
+                    renderTable(currentEntries);
                 } else {
+                    currentSummary = null;
+                    currentEntries = [];
                     showToast(data.error, 'error');
                 }
             } catch (e) {
+                currentSummary = null;
+                currentEntries = [];
                 document.getElementById('summaryTableBody').innerHTML = '<tr><td colspan="12" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load data</td></tr>';
             }
         }
@@ -1002,6 +1143,538 @@
         function exportCSV() {
             if (!currentDate) return;
             window.location.href = `${API_BASE}/api/export-daily-summary?date=${currentDate}`;
+        }
+
+        function normalizeDateString(dateValue) {
+            if (!dateValue) return '';
+            if (typeof dateValue === 'string') {
+                return dateValue.split('T')[0].split(' ')[0];
+            }
+            if (dateValue instanceof Date && !Number.isNaN(dateValue.getTime())) {
+                return formatInputDate(dateValue);
+            }
+            return '';
+        }
+
+        function formatInputDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function formatReportDate(dateValue) {
+            const normalized = normalizeDateString(dateValue);
+            if (!normalized) return '--/--/--';
+
+            const parts = normalized.split('-');
+            if (parts.length !== 3) return normalized;
+            return `${parts[2]}/${parts[1]}/${parts[0].slice(-2)}`;
+        }
+
+        function getPreviousDate(dateValue) {
+            const normalized = normalizeDateString(dateValue);
+            if (!normalized) return '';
+
+            const [year, month, day] = normalized.split('-').map(Number);
+            const date = new Date(year, month - 1, day);
+            date.setDate(date.getDate() - 1);
+            return formatInputDate(date);
+        }
+
+        function getDominantWorkingDate(entries) {
+            const counts = new Map();
+            let dominantDate = '';
+            let dominantCount = 0;
+
+            (entries || []).forEach(entry => {
+                const dateKey = normalizeDateString(entry.working_date);
+                if (!dateKey) return;
+
+                const nextCount = (counts.get(dateKey) || 0) + 1;
+                counts.set(dateKey, nextCount);
+
+                if (nextCount > dominantCount) {
+                    dominantCount = nextCount;
+                    dominantDate = dateKey;
+                }
+            });
+
+            return dominantDate || getPreviousDate(currentDate);
+        }
+
+        function formatReportCount(value) {
+            return String(Number(value) || 0).padStart(2, '0');
+        }
+
+        function formatGeneratedTime(date) {
+            return date.toLocaleTimeString('en-IN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true
+            });
+        }
+
+        function buildOfficerReportData() {
+            const summary = currentSummary || {};
+            const totalChecked = Number(summary.total) || 0;
+            const working = Number(summary.working) || 0;
+            const simDown = Number(summary.sim_down) || 0;
+            const partialData = Number(summary.partial_data) || 0;
+            const nonRtis = Number(summary.non_rtis) || 0;
+            const downloaded = working + partialData;
+            const generatedAt = new Date();
+
+            return {
+                analysisDate: formatReportDate(currentDate),
+                analyzedDataDate: formatReportDate(getDominantWorkingDate(currentEntries)),
+                generatedDate: formatReportDate(formatInputDate(generatedAt)),
+                generatedTime: formatGeneratedTime(generatedAt),
+                totalChecked,
+                downloaded,
+                simDown,
+                nonRtis,
+                partialData,
+                working
+            };
+        }
+
+        function getOfficerSummaryRows(report) {
+            return [
+                {
+                    label: 'Total no. of RTIS loco/train checked for (UP+DN) SPM data',
+                    value: report.totalChecked
+                },
+                {
+                    label: 'Total Data Downloaded',
+                    value: report.downloaded
+                },
+                {
+                    label: 'SIM down',
+                    value: report.simDown
+                },
+                {
+                    label: 'Non RTIS Loco',
+                    value: report.nonRtis
+                }
+            ];
+        }
+
+        function getOfficerDownloadedRows(report) {
+            return [
+                {
+                    label: 'Downloaded data',
+                    value: report.downloaded
+                },
+                {
+                    label: 'Mismatched/not available',
+                    value: report.partialData
+                },
+                {
+                    label: 'Total RTIS data analyzed',
+                    value: report.working
+                }
+            ];
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderOfficerTableRows(rows) {
+            return rows.map(row => `
+                <tr>
+                    <td>${escapeHtml(row.label)}</td>
+                    <td>${escapeHtml(formatReportCount(row.value))}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderOfficerReportPreview(report) {
+            const preview = document.getElementById('officerReportPreview');
+            preview.innerHTML = `
+                <div class="report-preview-card">
+                    <div class="report-preview-header">
+                        <h4>RTIS Analysis Daily Report</h4>
+                    </div>
+                    <div class="report-meta-grid">
+                        <div class="report-meta-item">
+                            <div class="report-meta-label">Date of SPM Analysis</div>
+                            <div class="report-meta-value">${escapeHtml(report.analysisDate)}</div>
+                        </div>
+                        <div class="report-meta-item">
+                            <div class="report-meta-label">Analyzed Data Is Of</div>
+                            <div class="report-meta-value">${escapeHtml(report.analyzedDataDate)}</div>
+                        </div>
+                    </div>
+                    <div class="report-table-wrap">
+                        <div class="report-table-title">Summary</div>
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Count</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${renderOfficerTableRows(getOfficerSummaryRows(report))}
+                            </tbody>
+                        </table>
+
+                        <div class="report-table-title">Downloaded Data</div>
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Count</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${renderOfficerTableRows(getOfficerDownloadedRows(report))}
+                            </tbody>
+                        </table>
+
+                        <div class="report-footer-note">
+                            Report generated from crtms.in on ${escapeHtml(report.generatedDate)} at ${escapeHtml(report.generatedTime)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function padRight(value, width) {
+            return String(value).padEnd(width, ' ');
+        }
+
+        function padLeft(value, width) {
+            return String(value).padStart(width, ' ');
+        }
+
+        function buildAsciiTable(rows) {
+            const labelWidth = Math.max(
+                'Item'.length,
+                ...rows.map(row => row.label.length)
+            );
+            const countWidth = Math.max(
+                'Count'.length,
+                ...rows.map(row => formatReportCount(row.value).length)
+            );
+            const border = `+${'-'.repeat(labelWidth + 2)}+${'-'.repeat(countWidth + 2)}+`;
+            const header = `| ${padRight('Item', labelWidth)} | ${padRight('Count', countWidth)} |`;
+            const body = rows.map(row =>
+                `| ${padRight(row.label, labelWidth)} | ${padLeft(formatReportCount(row.value), countWidth)} |`
+            );
+
+            return [border, header, border, ...body, border].join('\n');
+        }
+
+        function buildOfficerPlainText(report) {
+            return [
+                '*RTIS Analysis Daily Report*',
+                `Date of SPM analysis: ${report.analysisDate}`,
+                `Analyzed data date: ${report.analyzedDataDate}`,
+                '',
+                '*Overall Summary*',
+                `1. RTIS checked (UP+DN): *${formatReportCount(report.totalChecked)}*`,
+                `2. Total data downloaded: *${formatReportCount(report.downloaded)}*`,
+                `3. SIM down: *${formatReportCount(report.simDown)}*`,
+                `4. Non RTIS loco: *${formatReportCount(report.nonRtis)}*`,
+                '',
+                '*Downloaded Data*',
+                `1. Downloaded data: *${formatReportCount(report.downloaded)}*`,
+                `2. Mismatched/not available: *${formatReportCount(report.partialData)}*`,
+                `3. Total RTIS data analyzed: *${formatReportCount(report.working)}*`,
+                '',
+                `_Generated from crtms.in on ${report.generatedDate} at ${report.generatedTime}_`
+            ].join('\n');
+        }
+
+        function buildOfficerTableText(report) {
+            return [
+                '*RTIS ANALYSIS DAILY REPORT*',
+                `Date of SPM analysis: ${report.analysisDate}`,
+                `The analyzed data is of: ${report.analyzedDataDate}`,
+                '',
+                '```',
+                'SUMMARY',
+                buildAsciiTable(getOfficerSummaryRows(report)),
+                '',
+                'DOWNLOADED DATA',
+                buildAsciiTable(getOfficerDownloadedRows(report)),
+                '```',
+                '',
+                `_Report generated from crtms.in on ${report.generatedDate} at ${report.generatedTime}_`
+            ].join('\n');
+        }
+
+        function escapeSvgText(value) {
+            return escapeHtml(value).replace(/\n/g, '&#10;');
+        }
+
+        function wrapReportLabel(text, maxChars = 34) {
+            const words = String(text).split(/\s+/).filter(Boolean);
+            const lines = [];
+            let currentLine = '';
+
+            words.forEach(word => {
+                const candidate = currentLine ? `${currentLine} ${word}` : word;
+                if (candidate.length <= maxChars) {
+                    currentLine = candidate;
+                } else {
+                    if (currentLine) {
+                        lines.push(currentLine);
+                    }
+                    currentLine = word;
+                }
+            });
+
+            if (currentLine) {
+                lines.push(currentLine);
+            }
+
+            return lines.length ? lines : [''];
+        }
+
+        function prepareOfficerSvgRows(rows) {
+            return rows.map(row => {
+                const lines = wrapReportLabel(row.label);
+                return {
+                    ...row,
+                    lines,
+                    height: Math.max(56, 20 + (lines.length * 24))
+                };
+            });
+        }
+
+        function buildOfficerReportSvg(report) {
+            const summaryRows = prepareOfficerSvgRows(getOfficerSummaryRows(report));
+            const downloadedRows = prepareOfficerSvgRows(getOfficerDownloadedRows(report));
+            const svgWidth = 720;
+            const outerPadding = 20;
+            const cardX = outerPadding;
+            const cardY = outerPadding;
+            const cardWidth = svgWidth - (outerPadding * 2);
+            const headerHeight = 84;
+            const metaBoxHeight = 84;
+            const metaGap = 14;
+            const metaBoxWidth = (cardWidth - metaGap) / 2;
+            const tableHeaderHeight = 42;
+            const sectionGap = 34;
+            const footerHeight = 34;
+            const countColWidth = 116;
+            const labelColWidth = cardWidth - countColWidth;
+            const summaryTableBodyHeight = summaryRows.reduce((sum, row) => sum + row.height, 0);
+            const downloadedTableBodyHeight = downloadedRows.reduce((sum, row) => sum + row.height, 0);
+            const summaryTableHeight = tableHeaderHeight + summaryTableBodyHeight;
+            const downloadedTableHeight = tableHeaderHeight + downloadedTableBodyHeight;
+            const contentTop = cardY + headerHeight + 16;
+            const firstTableTop = contentTop + metaBoxHeight + 28;
+            const secondTableTop = firstTableTop + summaryTableHeight + sectionGap;
+            const cardHeight = headerHeight + 16 + metaBoxHeight + 28 + summaryTableHeight + sectionGap + downloadedTableHeight + 24 + footerHeight;
+            const svgHeight = cardY + cardHeight + outerPadding;
+            const footerY = cardY + cardHeight - 16;
+
+            const renderTable = (rows, topY) => {
+                const tableHeight = tableHeaderHeight + rows.reduce((sum, row) => sum + row.height, 0);
+                let currentY = topY + tableHeaderHeight;
+                const rowMarkup = rows.map(row => {
+                    const countY = currentY + (row.height / 2);
+                    const lineMarkup = row.lines.map((line, index) => `
+                        <text x="${cardX + 16}" y="${currentY + 18 + (index * 22)}" font-family="Segoe UI, Arial, sans-serif" font-size="19" fill="#1e293b" dominant-baseline="middle">${escapeSvgText(line)}</text>
+                    `).join('');
+                    const markup = `
+                        <line x1="${cardX}" y1="${currentY}" x2="${cardX + cardWidth}" y2="${currentY}" stroke="#e2e8f0" stroke-width="1" />
+                        ${lineMarkup}
+                        <text x="${cardX + cardWidth - 16}" y="${countY}" font-family="Consolas, Menlo, monospace" font-size="24" font-weight="700" fill="#0f172a" text-anchor="end" dominant-baseline="middle">${escapeSvgText(formatReportCount(row.value))}</text>
+                    `;
+                    currentY += row.height;
+                    return markup;
+                }).join('');
+
+                return `
+                    <rect x="${cardX}" y="${topY}" width="${cardWidth}" height="${tableHeight}" rx="12" fill="#ffffff" stroke="#e2e8f0" />
+                    <rect x="${cardX}" y="${topY}" width="${cardWidth}" height="${tableHeaderHeight}" rx="12" fill="#f8fafc" />
+                    <rect x="${cardX}" y="${topY + 12}" width="${cardWidth}" height="${tableHeaderHeight - 12}" fill="#f8fafc" />
+                    <line x1="${cardX + labelColWidth}" y1="${topY}" x2="${cardX + labelColWidth}" y2="${topY + tableHeight}" stroke="#e2e8f0" stroke-width="1" />
+                    <line x1="${cardX}" y1="${topY + tableHeaderHeight}" x2="${cardX + cardWidth}" y2="${topY + tableHeaderHeight}" stroke="#e2e8f0" stroke-width="1" />
+                    <text x="${cardX + 16}" y="${topY + 23}" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#64748b" dominant-baseline="middle">Item</text>
+                    <text x="${cardX + cardWidth - 16}" y="${topY + 23}" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#64748b" text-anchor="end" dominant-baseline="middle">Count</text>
+                    ${rowMarkup}
+                `;
+            };
+
+            return `
+                <svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
+                    <rect width="${svgWidth}" height="${svgHeight}" fill="#f1f5f9" />
+                    <rect x="${cardX}" y="${cardY}" width="${cardWidth}" height="${cardHeight}" rx="18" fill="#ffffff" stroke="#dbe3ef" />
+                    <rect x="${cardX}" y="${cardY}" width="${cardWidth}" height="${headerHeight}" rx="18" fill="#eff6ff" />
+                    <rect x="${cardX}" y="${cardY + 24}" width="${cardWidth}" height="${headerHeight - 24}" fill="#eff6ff" />
+                    <text x="${cardX + 20}" y="${cardY + 44}" font-family="Segoe UI, Arial, sans-serif" font-size="31" font-weight="700" fill="#0f172a" dominant-baseline="middle">RTIS Analysis Daily Report</text>
+
+                    <rect x="${cardX + 20}" y="${contentTop}" width="${metaBoxWidth}" height="${metaBoxHeight}" rx="12" fill="#ffffff" stroke="#e2e8f0" />
+                    <rect x="${cardX + 20 + metaBoxWidth + metaGap}" y="${contentTop}" width="${metaBoxWidth}" height="${metaBoxHeight}" rx="12" fill="#ffffff" stroke="#e2e8f0" />
+                    <text x="${cardX + 34}" y="${contentTop + 22}" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="700" fill="#64748b" dominant-baseline="middle">DATE OF SPM ANALYSIS</text>
+                    <text x="${cardX + 34}" y="${contentTop + 58}" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="700" fill="#0f172a" dominant-baseline="middle">${escapeSvgText(report.analysisDate)}</text>
+                    <text x="${cardX + 34 + metaBoxWidth + metaGap}" y="${contentTop + 22}" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="700" fill="#64748b" dominant-baseline="middle">ANALYZED DATA IS OF</text>
+                    <text x="${cardX + 34 + metaBoxWidth + metaGap}" y="${contentTop + 58}" font-family="Segoe UI, Arial, sans-serif" font-size="27" font-weight="700" fill="#0f172a" dominant-baseline="middle">${escapeSvgText(report.analyzedDataDate)}</text>
+
+                    <text x="${cardX}" y="${firstTableTop - 12}" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#334155" dominant-baseline="middle">SUMMARY</text>
+                    ${renderTable(summaryRows, firstTableTop)}
+
+                    <text x="${cardX}" y="${secondTableTop - 12}" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#334155" dominant-baseline="middle">DOWNLOADED DATA</text>
+                    ${renderTable(downloadedRows, secondTableTop)}
+
+                    <text x="${cardX + cardWidth - 20}" y="${footerY}" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#64748b" text-anchor="end" dominant-baseline="middle">Report generated from crtms.in on ${escapeSvgText(report.generatedDate)} at ${escapeSvgText(report.generatedTime)}</text>
+                </svg>
+            `;
+        }
+
+        async function svgToPngBlob(svgString) {
+            const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            try {
+                const image = await new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => reject(new Error('Failed to render report image'));
+                    img.src = url;
+                });
+
+                const scale = Math.max(2, Math.ceil(window.devicePixelRatio || 1));
+                const canvas = document.createElement('canvas');
+                canvas.width = image.width * scale;
+                canvas.height = image.height * scale;
+                const ctx = canvas.getContext('2d');
+
+                if (!ctx) {
+                    throw new Error('Canvas not available');
+                }
+
+                ctx.scale(scale, scale);
+                ctx.drawImage(image, 0, 0);
+
+                const blob = await new Promise((resolve, reject) => {
+                    canvas.toBlob(result => {
+                        if (result) resolve(result);
+                        else reject(new Error('Failed to export PNG'));
+                    }, 'image/png');
+                });
+
+                return blob;
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+        }
+
+        function getOfficerReportFileName(report) {
+            const normalizedDate = normalizeDateString(currentDate) || 'report';
+            return `spm_officer_report_${normalizedDate}.png`;
+        }
+
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function fallbackCopyText(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+
+            let copied = false;
+            try {
+                copied = document.execCommand('copy');
+            } catch (e) {
+                copied = false;
+            }
+
+            document.body.removeChild(textarea);
+            return copied;
+        }
+
+        async function copyTextToClipboard(text, successMessage) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(text);
+                } else if (!fallbackCopyText(text)) {
+                    throw new Error('Clipboard unavailable');
+                }
+                showToast(successMessage, 'success');
+            } catch (e) {
+                showToast('Failed to copy report', 'error');
+            }
+        }
+
+        function openOfficerReportModal() {
+            if (!currentDate) {
+                showToast('Select a date first', 'error');
+                return;
+            }
+
+            currentOfficerReport = buildOfficerReportData();
+            renderOfficerReportPreview(currentOfficerReport);
+            openModal('officerReportModal');
+        }
+
+        async function copyOfficerPlainReport() {
+            if (!currentOfficerReport) {
+                currentOfficerReport = buildOfficerReportData();
+            }
+
+            await copyTextToClipboard(
+                buildOfficerPlainText(currentOfficerReport),
+                'Plain text report copied'
+            );
+        }
+
+        async function copyOfficerReportImage() {
+            if (!currentOfficerReport) {
+                currentOfficerReport = buildOfficerReportData();
+            }
+
+            try {
+                const blob = await svgToPngBlob(buildOfficerReportSvg(currentOfficerReport));
+
+                if (navigator.clipboard && window.ClipboardItem && window.isSecureContext) {
+                    await navigator.clipboard.write([
+                        new ClipboardItem({ 'image/png': blob })
+                    ]);
+                    showToast('Report image copied', 'success');
+                } else {
+                    downloadBlob(blob, getOfficerReportFileName(currentOfficerReport));
+                    showToast('Image copy not supported here, PNG downloaded instead', 'success');
+                }
+            } catch (e) {
+                showToast('Failed to prepare report image', 'error');
+            }
+        }
+
+        async function downloadOfficerReportImage() {
+            if (!currentOfficerReport) {
+                currentOfficerReport = buildOfficerReportData();
+            }
+
+            try {
+                const blob = await svgToPngBlob(buildOfficerReportSvg(currentOfficerReport));
+                downloadBlob(blob, getOfficerReportFileName(currentOfficerReport));
+                showToast('Report PNG downloaded', 'success');
+            } catch (e) {
+                showToast('Failed to download report image', 'error');
+            }
         }
 
         // Fetch train from/to stations (silent=true suppresses toasts for auto-fetch)
