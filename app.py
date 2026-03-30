@@ -6448,6 +6448,72 @@ async def get_daily_summary(request: Request, date: str = Query(...)):
         )
 
 
+@app.get("/api/analysis-totals")
+async def get_analysis_totals(request: Request, date: str = Query(...)):
+    """Get monthly and fiscal year totals for RTIS data analyzed"""
+    try:
+        from datetime import datetime
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Parse the input date
+        target_date = datetime.strptime(date, '%Y-%m-%d')
+        year = target_date.year
+        month = target_date.month
+
+        # Calculate fiscal year (April 1 - March 31)
+        # If month is Jan-Mar, fiscal year started previous year
+        if month >= 4:
+            fy_start = f"{year}-04-01"
+            fy_end = f"{year + 1}-03-31"
+            fy_label = f"FY {str(year)[2:]}-{str(year + 1)[2:]}"
+        else:
+            fy_start = f"{year - 1}-04-01"
+            fy_end = f"{year}-03-31"
+            fy_label = f"FY {str(year - 1)[2:]}-{str(year)[2:]}"
+
+        # Monthly total (working count from div_rtis_analyses)
+        month_start = f"{year}-{month:02d}-01"
+        if month == 12:
+            month_end = f"{year + 1}-01-01"
+        else:
+            month_end = f"{year}-{month + 1:02d}-01"
+
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM div_rtis_analyses
+            WHERE DATE(analysis_date) >= %s AND DATE(analysis_date) < %s
+        """, [month_start, month_end])
+        monthly_result = cursor.fetchone()
+        monthly_total = monthly_result['count'] if monthly_result else 0
+
+        # Fiscal year total
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM div_rtis_analyses
+            WHERE DATE(analysis_date) >= %s AND DATE(analysis_date) <= %s
+        """, [fy_start, fy_end])
+        fy_result = cursor.fetchone()
+        fy_total = fy_result['count'] if fy_result else 0
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "date": date,
+            "monthly_total": monthly_total,
+            "monthly_label": target_date.strftime("%B %Y"),
+            "fy_total": fy_total,
+            "fy_label": fy_label
+        }
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch analysis totals: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
 @app.get("/api/export-daily-summary")
 async def export_daily_summary(request: Request, date: str = Query(...)):
     """Export daily summary as CSV"""

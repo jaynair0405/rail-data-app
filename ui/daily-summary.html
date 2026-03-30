@@ -780,6 +780,7 @@
         let currentSummary = null;
         let currentEntries = [];
         let currentOfficerReport = null;
+        let currentAnalysisTotals = null;
         let pendingEntries = [];
         let editingEntryId = null; // Track entry being edited (null = add mode)
 
@@ -805,22 +806,33 @@
             document.getElementById('summaryTableBody').innerHTML = '<tr><td colspan="12" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
 
             try {
-                const res = await fetch(`${API_BASE}/api/daily-summary?date=${currentDate}`);
-                const data = await res.json();
+                // Fetch daily summary and analysis totals in parallel
+                const [summaryRes, totalsRes] = await Promise.all([
+                    fetch(`${API_BASE}/api/daily-summary?date=${currentDate}`),
+                    fetch(`${API_BASE}/api/analysis-totals?date=${currentDate}`)
+                ]);
+                const data = await summaryRes.json();
+                const totalsData = await totalsRes.json();
 
                 if (data.success) {
                     currentSummary = data.summary || {};
                     currentEntries = data.entries || [];
+                    currentAnalysisTotals = totalsData.success ? totalsData : null;
+                    currentOfficerReport = null; // Reset to rebuild with new data
                     updateStats(currentSummary);
                     renderTable(currentEntries);
                 } else {
                     currentSummary = null;
                     currentEntries = [];
+                    currentAnalysisTotals = null;
+                    currentOfficerReport = null;
                     showToast(data.error, 'error');
                 }
             } catch (e) {
                 currentSummary = null;
                 currentEntries = [];
+                currentAnalysisTotals = null;
+                currentOfficerReport = null;
                 document.getElementById('summaryTableBody').innerHTML = '<tr><td colspan="12" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load data</td></tr>';
             }
         }
@@ -1225,6 +1237,13 @@
             const downloaded = working + partialData;
             const generatedAt = new Date();
 
+            // Get monthly and FY totals
+            const totals = currentAnalysisTotals || {};
+            const monthlyTotal = totals.monthly_total || 0;
+            const monthlyLabel = totals.monthly_label || 'This Month';
+            const fyTotal = totals.fy_total || 0;
+            const fyLabel = totals.fy_label || 'FY';
+
             return {
                 analysisDate: formatReportDate(currentDate),
                 analyzedDataDate: formatReportDate(getDominantWorkingDate(currentEntries)),
@@ -1235,7 +1254,11 @@
                 simDown,
                 nonRtis,
                 partialData,
-                working
+                working,
+                monthlyTotal,
+                monthlyLabel,
+                fyTotal,
+                fyLabel
             };
         }
 
@@ -1339,6 +1362,26 @@
                             </tbody>
                         </table>
 
+                        <div class="report-table-title">Cumulative Data Analyzed</div>
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Period</th>
+                                    <th>Count</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>${escapeHtml(report.monthlyLabel)}</td>
+                                    <td>${report.monthlyTotal}</td>
+                                </tr>
+                                <tr>
+                                    <td>${escapeHtml(report.fyLabel)}</td>
+                                    <td>${report.fyTotal}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
                         <div class="report-footer-note">
                             Report generated from crtms.in on ${escapeHtml(report.generatedDate)}
                         </div>
@@ -1389,6 +1432,10 @@
                 `1. Downloaded data: *${formatReportCount(report.downloaded)}*`,
                 `2. Mismatched/not available: *${formatReportCount(report.partialData)}*`,
                 `3. Total RTIS data analyzed: *${formatReportCount(report.working)}*`,
+                '',
+                '*Cumulative Data Analyzed*',
+                `${report.monthlyLabel}: *${report.monthlyTotal}*`,
+                `${report.fyLabel}: *${report.fyTotal}*`,
                 '',
                 `_Generated from crtms.in on ${report.generatedDate}_`
             ].join('\n');
