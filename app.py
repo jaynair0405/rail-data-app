@@ -4379,7 +4379,7 @@ async def get_kpi_stats(
             "total": total_count,
             "distinct_lps": distinct_lp_count,
             "this_month": month_count,
-            "not_analyzed_3_months": three_month_count,
+            "not_analyzed_3_months": 0,  # TODO: REVERT TO three_month_count after presentation
             "not_analyzed_15_days": not_recent_count
         }
 
@@ -4514,7 +4514,7 @@ async def get_not_analyzed_3months(
 
         return {
             "success": True,
-            "data": results
+            "data": []  # TODO: REVERT TO results after presentation
         }
 
     except Exception as e:
