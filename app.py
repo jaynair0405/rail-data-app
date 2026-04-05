@@ -7611,16 +7611,24 @@ async def get_braking_analysis_data(
                     "speed_100m": run["speed_100m"],
                 },
                 # TODO: REVERT noise filter after presentation
-                # Filter out noisy points: GHAT > 60 km/h, PLAIN > 110 km/h
+                # Filter out noisy points:
+                #   High noise: GHAT > 60 km/h, PLAIN > 110 km/h
+                #   Low noise dips: speed < 10 km/h when distance > 300m
                 "points": [
                     {
                         "distance": p["distance_to_halt"],
                         "speed": p["speed"],
                     }
                     for p in points
-                    if (run["section_type"] == "GHAT" and (p["speed"] or 0) <= 60) or
-                       (run["section_type"] == "PLAIN" and (p["speed"] or 0) <= 110) or
-                       (run["section_type"] not in ("GHAT", "PLAIN"))
+                    if (
+                        # Filter high speed noise by section type
+                        ((run["section_type"] == "GHAT" and (p["speed"] or 0) <= 60) or
+                         (run["section_type"] == "PLAIN" and (p["speed"] or 0) <= 110) or
+                         (run["section_type"] not in ("GHAT", "PLAIN")))
+                        and
+                        # Filter low speed dips far from halt (noise)
+                        not ((p["distance_to_halt"] or 0) > 300 and (p["speed"] or 0) < 10)
+                    )
                 ],
                 # Legend format: "DD/MM TrainNo LocoNo - LP Name"
                 "legend": f"{date_str} {run['train_number'] or ''} {run['loco_number'] or ''} - {run['lp_name'] or ''}",
