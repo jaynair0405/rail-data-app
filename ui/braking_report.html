@@ -687,8 +687,10 @@ function renderChart(chartNum, data) {
         name: run.legend,
         type: 'line',
         smooth: true,
-        symbol: 'none',
-        lineStyle: { width: 2 },
+        symbol: 'circle',
+        symbolSize: 0,
+        showSymbol: false,
+        lineStyle: { width: 4, color: COLORS[idx % COLORS.length] },
         data: run.points.filter(p => p.distance <= maxDistance).map(p => [p.distance, p.speed]),
         itemStyle: { color: COLORS[idx % COLORS.length] }
     }));
@@ -704,16 +706,24 @@ function renderChart(chartNum, data) {
         },
         legend: {
             type: 'scroll',
-            orient: 'horizontal',
-            bottom: 0,
+            orient: 'vertical',
+            right: 10,
+            top: 10,
+            bottom: 10,
             data: data.runs.map(r => r.legend),
-            textStyle: { fontSize: 10 }
+            textStyle: { fontSize: 9 },
+            itemWidth: 15,
+            itemHeight: 8,
+            itemGap: 4,
+            formatter: function(name) {
+                return name.length > 30 ? name.substring(0, 30) + '..' : name;
+            }
         },
         grid: {
             left: 60,
-            right: 30,
+            right: 200,
             top: 20,
-            bottom: 80
+            bottom: 40
         },
         xAxis: {
             type: 'value',
