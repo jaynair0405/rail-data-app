@@ -6688,6 +6688,25 @@ async def get_sim_down_weekly(
             elif status == 'NON RTIS':
                 loco_map[loco_num]['non_rtis_count'] += 1
 
+        # Get analyzed locos from div_rtis_analyses to fill blank cells with "OK"
+        if loco_map:
+            loco_list = list(loco_map.keys())
+            placeholders = ','.join(['%s'] * len(loco_list))
+            cursor.execute(f"""
+                SELECT DISTINCT loco_number, DATE(working_date) as working_date
+                FROM div_rtis_analyses
+                WHERE loco_number IN ({placeholders})
+                  AND working_date BETWEEN %s AND %s
+            """, loco_list + [week_start, week_end])
+            analyzed_entries = cursor.fetchall()
+
+            # Mark analyzed days as "OK" where currently blank
+            for entry in analyzed_entries:
+                loco_num = entry['loco_number']
+                date_str = entry['working_date'].strftime('%Y-%m-%d') if hasattr(entry['working_date'], 'strftime') else str(entry['working_date'])
+                if loco_num in loco_map and loco_map[loco_num]['daily_status'].get(date_str) == '':
+                    loco_map[loco_num]['daily_status'][date_str] = 'OK'
+
         # Convert to list and sort by shed, then loco number
         locos = list(loco_map.values())
         locos.sort(key=lambda x: (x['base_shed'], x['loco_number']))

@@ -131,6 +131,8 @@
         }
         .legend-color.sim-down { background: var(--sim-down); }
         .legend-color.non-rtis { background: var(--non-rtis); }
+        .legend-color.ok { background: var(--success); }
+        .legend-color.blank { background: #fff; }
 
         /* Stats */
         .stats-row {
@@ -221,6 +223,14 @@
             background: var(--non-rtis) !important;
             color: #fff;
         }
+        .status-cell.ok {
+            background: var(--success) !important;
+            color: #fff;
+        }
+        .status-cell.not-in-beat {
+            background: #f1f5f9 !important;
+            color: var(--text-light);
+        }
 
         /* Loading / Empty */
         .loading, .empty-state {
@@ -300,6 +310,14 @@
             <div class="legend-item">
                 <div class="legend-color non-rtis"></div>
                 <span>NON RTIS</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color ok"></div>
+                <span>Analyzed OK</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color blank" style="display: flex; align-items: center; justify-content: center; font-weight: 600; color: var(--text-light);">X</div>
+                <span>Not in beat</span>
             </div>
         </div>
 
@@ -558,6 +576,12 @@
                         } else if (status === 'NON RTIS') {
                             cellClass += ' non-rtis';
                             displayText = 'NON RTIS';
+                        } else if (status === 'OK') {
+                            cellClass += ' ok';
+                            displayText = 'OK';
+                        } else {
+                            cellClass += ' not-in-beat';
+                            displayText = 'X';
                         }
                         return `<td class="${cellClass}">${displayText}</td>`;
                     }).join('')}
