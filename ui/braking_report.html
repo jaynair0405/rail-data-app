@@ -133,15 +133,13 @@
         .toggle-btn.ghat.active { background: var(--ghat); }
         .toggle-btn.plain.active { background: var(--plain); }
 
-        /* Charts Grid */
+        /* Charts Grid - Vertical stacking */
         .charts-grid {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: 1fr;
             gap: 24px;
-        }
-
-        @media (max-width: 1200px) {
-            .charts-grid { grid-template-columns: 1fr; }
+            max-width: 1000px;
+            margin: 0 auto;
         }
 
         /* Chart Box */
@@ -325,6 +323,16 @@
                     <option value="20" selected>20 runs</option>
                     <option value="25">25 runs</option>
                     <option value="30">30 runs</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Distance Range</label>
+                <select id="distance-range">
+                    <option value="2400">2400m</option>
+                    <option value="2000">2000m</option>
+                    <option value="1400">1400m</option>
+                    <option value="1000" selected>1000m</option>
                 </select>
             </div>
 
@@ -671,14 +679,17 @@ function renderChart(chartNum, data) {
         chart2Instance = chart;
     }
 
-    // Prepare series data
+    // Get selected distance range
+    const maxDistance = parseInt(document.getElementById('distance-range').value) || 2400;
+
+    // Prepare series data (filter points within selected range)
     const series = data.runs.map((run, idx) => ({
         name: run.legend,
         type: 'line',
         smooth: true,
         symbol: 'none',
         lineStyle: { width: 2 },
-        data: run.points.map(p => [p.distance, p.speed]),
+        data: run.points.filter(p => p.distance <= maxDistance).map(p => [p.distance, p.speed]),
         itemStyle: { color: COLORS[idx % COLORS.length] }
     }));
 
@@ -710,7 +721,7 @@ function renderChart(chartNum, data) {
             nameLocation: 'middle',
             nameGap: 30,
             min: 0,
-            max: 2400,
+            max: maxDistance,
             inverse: true,
             axisLabel: { formatter: '{value}' }
         },
