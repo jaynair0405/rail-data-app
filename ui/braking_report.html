@@ -277,7 +277,7 @@
     <div class="page-header">
         <div class="page-title">
             <h1><i class="fa-solid fa-gauge-high" style="color: var(--primary);"></i> Braking Pattern Analysis</h1>
-            <p>Compare LP braking behavior at nominated halts (fortnightly analysis)</p>
+            <p>Compare LP braking behavior at nominated halts</p>
         </div>
         <div style="display: flex; gap: 10px;">
             <a href="index.html" class="btn">
@@ -293,10 +293,20 @@
     <div class="filter-section">
         <div class="filter-row">
             <div class="filter-group">
-                <label>Fortnight Period</label>
-                <select id="fortnight-period" onchange="onGlobalFilterChange()">
+                <label>Quick Select</label>
+                <select id="fortnight-period" onchange="onQuickSelectChange()">
                     <!-- Populated dynamically -->
                 </select>
+            </div>
+
+            <div class="filter-group">
+                <label>Start Date</label>
+                <input type="date" id="start-date" onchange="onCustomDateChange()">
+            </div>
+
+            <div class="filter-group">
+                <label>End Date</label>
+                <input type="date" id="end-date" onchange="onCustomDateChange()">
             </div>
 
             <div class="filter-group">
@@ -472,6 +482,9 @@ function populateFortnightPeriods() {
     const today = new Date();
     const options = [];
 
+    // Add custom option at the top
+    options.push({ label: 'Custom Range', value: 'custom' });
+
     // Generate last 6 fortnights
     for (let i = 0; i < 6; i++) {
         const monthOffset = Math.floor(i / 2);
@@ -498,17 +511,47 @@ function populateFortnightPeriods() {
     }
 
     select.innerHTML = options.map((opt, i) =>
-        `<option value="${opt.value}" ${i === 0 ? 'selected' : ''}>${opt.label}</option>`
+        `<option value="${opt.value}" ${i === 1 ? 'selected' : ''}>${opt.label}</option>`
     ).join('');
+
+    // Set initial date values from the first fortnight
+    updateDateInputsFromQuickSelect();
 }
 
 function formatDate(date) {
     return date.toISOString().split('T')[0];
 }
 
-function getDateRange() {
+// When quick select dropdown changes
+function onQuickSelectChange() {
     const val = document.getElementById('fortnight-period').value;
-    const [start, end] = val.split('|');
+    if (val !== 'custom') {
+        updateDateInputsFromQuickSelect();
+    }
+    onGlobalFilterChange();
+}
+
+// Update date inputs based on quick select value
+function updateDateInputsFromQuickSelect() {
+    const val = document.getElementById('fortnight-period').value;
+    if (val && val !== 'custom') {
+        const [start, end] = val.split('|');
+        document.getElementById('start-date').value = start;
+        document.getElementById('end-date').value = end;
+    }
+}
+
+// When custom date inputs change
+function onCustomDateChange() {
+    // Set quick select to "Custom Range"
+    document.getElementById('fortnight-period').value = 'custom';
+    onGlobalFilterChange();
+}
+
+function getDateRange() {
+    // Always use the date input values (they're synced with quick select)
+    const start = document.getElementById('start-date').value;
+    const end = document.getElementById('end-date').value;
     return { start_date: start, end_date: end };
 }
 

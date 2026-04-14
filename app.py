@@ -152,6 +152,11 @@ STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
 BRAKE_OFFSETS = [1000, 300, 200, 100, 50, 20]
+# Offsets for violations analysis (includes ghat-specific distances)
+VIOLATIONS_OFFSETS = BRAKE_OFFSETS + [900, 800]
+# Ghat distance thresholds: default 900m, specific stations use 800m
+GHAT_DEFAULT_DISTANCE = 900
+GHAT_STATION_DISTANCES = {"KAD": 800, "NNCN": 800}  # T5 stations
 BRAKE_EVENT_TOLERANCE = 0.3
 BRAKE_REQUIRED_DROP = 45.0
 BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
@@ -3202,7 +3207,7 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                 # Compute braking profile
                 filtered = apply_criteria(user_df, criteria)
                 if filtered.height > 0:
-                    halts = _braking_profile(filtered, BRAKE_OFFSETS)
+                    halts = _braking_profile(filtered, VIOLATIONS_OFFSETS)
                     violations = _detect_violations(filtered, halts, criteria)
 
                     # Save violations to database
@@ -5361,7 +5366,8 @@ def _detect_violations(
     Violation types:
     - '1000m_zone_b': Zone B (mainline) violations at 1000m (>60 or >90 for 222xx)
     - '400m_zone_a': Zone A (suburban) violations at 400m (>30 or >40 for 222xx)
-    - 'ghat': Ghat section violations at 1000m (>40, UP direction only)
+    - 'ghat': Ghat section violations (>40, UP direction only)
+             Distance: 900m default, 800m for KAD and NNCN (T5 stations)
     """
     if not halts:
         return []
@@ -5409,23 +5415,32 @@ def _detect_violations(
 
         in_ghat = idx in ghat_halt_indices
 
-        # Check 1000m speed
+        # Check ghat violation first (takes precedence, only UP direction)
+        if in_ghat:
+            # Get ghat distance for this station: 800m for KAD/NNCN, 900m for others
+            station_code = (halt.get("station") or "").strip().upper()
+            ghat_distance = GHAT_STATION_DISTANCES.get(station_code, GHAT_DEFAULT_DISTANCE)
+            reading_ghat = speeds.get(str(ghat_distance))
+            if reading_ghat and isinstance(reading_ghat.get("speed"), (int, float)):
+                speed_ghat = reading_ghat["speed"]
+                if speed_ghat >= ghat_threshold + 1:
+                    violations.append({
+                        "violation_type": "ghat",
+                        "speed": speed_ghat,
+                        "threshold": ghat_threshold,
+                        "halt_station": halt_station,
+                        "zone": "ghat",
+                        "halt_time": halt.get("logging_time"),
+                        "distance": ghat_distance,  # Include distance for reference
+                    })
+
+        # Check 1000m speed for Zone B (only if not in ghat)
         reading_1000 = speeds.get("1000")
         if reading_1000 and isinstance(reading_1000.get("speed"), (int, float)):
             speed_1000 = reading_1000["speed"]
 
-            # Ghat violation (takes precedence, only UP direction)
-            if in_ghat and speed_1000 >= ghat_threshold + 1:
-                violations.append({
-                    "violation_type": "ghat",
-                    "speed": speed_1000,
-                    "threshold": ghat_threshold,
-                    "halt_station": halt_station,
-                    "zone": "ghat",
-                    "halt_time": halt.get("logging_time"),
-                })
             # Zone B violation (only if not in ghat and in zone B)
-            elif not in_zone_a and not in_ghat and speed_1000 >= zone_b_threshold + 1:
+            if not in_zone_a and not in_ghat and speed_1000 >= zone_b_threshold + 1:
                 violations.append({
                     "violation_type": "1000m_zone_b",
                     "speed": speed_1000,
@@ -6725,6 +6740,206 @@ async def get_sim_down_weekly(
     except Exception as e:
         return JSONResponse(
             {"error": f"Failed to fetch weekly report: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+# ------------------------------
+# Monthly Station Report API
+# ------------------------------
+
+@app.get("/api/monthly-station-report")
+async def get_monthly_station_report(
+    request: Request,
+    station: str = Query(...),
+    month: int = Query(...),
+    year: int = Query(...)
+):
+    """Get monthly station report with train counts and violations"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Primary stations list
+        primary_stations = ['CSMT', 'LTT', 'DR', 'KYN', 'DIVA', 'PNVL', 'BSR', 'PUNE', 'IGP', 'MMR', 'JL', 'ROHA', 'RN']
+
+        # Build station filter
+        if station == 'OTHERS':
+            placeholders = ','.join(['%s'] * len(primary_stations))
+            station_filter = f"a.from_station NOT IN ({placeholders})"
+            station_params = primary_stations
+        else:
+            station_filter = "a.from_station = %s"
+            station_params = [station]
+
+        # Base date filter
+        date_filter = "MONTH(a.working_date) = %s AND YEAR(a.working_date) = %s"
+        base_params = station_params + [month, year]
+
+        # Get all trains from this station
+        cursor.execute(f"""
+            SELECT
+                a.id,
+                a.train_number,
+                a.working_date,
+                a.loco_number,
+                a.from_station,
+                a.to_station
+            FROM div_rtis_analyses a
+            WHERE {station_filter}
+              AND {date_filter}
+            ORDER BY a.working_date, a.train_number
+        """, base_params)
+        all_trains = cursor.fetchall()
+
+        # Get violation counts per analysis
+        cursor.execute(f"""
+            SELECT
+                a.id,
+                COUNT(v.id) as violation_count
+            FROM div_rtis_analyses a
+            LEFT JOIN div_rtis_violations v ON v.analysis_id = a.id
+                AND v.violation_type = 'ghat'
+                AND v.halt_station IN ('KAD', 'MHLC', 'TKW', 'T5')
+            WHERE {station_filter}
+              AND {date_filter}
+            GROUP BY a.id
+        """, base_params)
+        violation_map = {row['id']: row['violation_count'] for row in cursor.fetchall()}
+
+        # For PUNE: Get line type (T5 or TKW)
+        line_type_map = {}
+        if station == 'PUNE':
+            # Get T5 trains (UP Line)
+            cursor.execute(f"""
+                SELECT DISTINCT a.id
+                FROM div_rtis_analyses a
+                JOIN div_rtis_braking_runs r ON r.analysis_id = a.id
+                JOIN div_rtis_braking_halts h ON h.run_id = r.run_id
+                WHERE {station_filter}
+                  AND {date_filter}
+                  AND h.halt_code = 'T5'
+            """, base_params)
+            for row in cursor.fetchall():
+                line_type_map[row['id']] = 'UP'
+
+            # Get TKW trains (Middle Line)
+            cursor.execute(f"""
+                SELECT DISTINCT a.id
+                FROM div_rtis_analyses a
+                JOIN div_rtis_braking_runs r ON r.analysis_id = a.id
+                JOIN div_rtis_braking_halts h ON h.run_id = r.run_id
+                WHERE {station_filter}
+                  AND {date_filter}
+                  AND h.halt_code = 'TKW'
+            """, base_params)
+            for row in cursor.fetchall():
+                if row['id'] not in line_type_map:  # Don't overwrite if already has T5
+                    line_type_map[row['id']] = 'MIDDLE'
+
+        # Build train lists with violation counts and line types
+        trains_all = []
+        trains_up = []
+        trains_middle = []
+        trains_violations = []
+        trains_nodata = []
+
+        for train in all_trains:
+            train_id = train['id']
+            train_data = {
+                'train_number': train['train_number'],
+                'working_date': train['working_date'].strftime('%Y-%m-%d') if hasattr(train['working_date'], 'strftime') else str(train['working_date']),
+                'loco_number': train['loco_number'],
+                'from_station': train['from_station'],
+                'to_station': train['to_station'],
+                'violation_count': violation_map.get(train_id, 0),
+                'line_type': line_type_map.get(train_id, '') if station == 'PUNE' else ''
+            }
+            trains_all.append(train_data)
+
+            if train_data['violation_count'] > 0:
+                trains_violations.append(train_data)
+
+            if station == 'PUNE':
+                line_type = line_type_map.get(train_id, '')
+                if line_type == 'UP':
+                    trains_up.append(train_data)
+                elif line_type == 'MIDDLE':
+                    trains_middle.append(train_data)
+                else:
+                    trains_nodata.append(train_data)
+
+        # Calculate summary statistics
+        total_trains = len(trains_all)
+        total_violations = len(trains_violations)
+
+        summary = {
+            'total_trains': total_trains,
+            'total_violations': total_violations
+        }
+
+        if station == 'PUNE':
+            # Get UP line violations count
+            cursor.execute(f"""
+                SELECT COUNT(DISTINCT a.id) as count
+                FROM div_rtis_analyses a
+                JOIN div_rtis_braking_runs r ON r.analysis_id = a.id
+                JOIN div_rtis_braking_halts h ON h.run_id = r.run_id
+                JOIN div_rtis_violations v ON v.analysis_id = a.id
+                WHERE {station_filter}
+                  AND {date_filter}
+                  AND h.halt_code = 'T5'
+                  AND v.violation_type = 'ghat'
+                  AND v.halt_station IN ('KAD', 'MHLC', 'TKW', 'T5')
+            """, base_params)
+            up_violations = cursor.fetchone()['count']
+
+            # Get Middle line violations count
+            cursor.execute(f"""
+                SELECT COUNT(DISTINCT a.id) as count
+                FROM div_rtis_analyses a
+                JOIN div_rtis_braking_runs r ON r.analysis_id = a.id
+                JOIN div_rtis_braking_halts h ON h.run_id = r.run_id
+                JOIN div_rtis_violations v ON v.analysis_id = a.id
+                WHERE {station_filter}
+                  AND {date_filter}
+                  AND h.halt_code = 'TKW'
+                  AND v.violation_type = 'ghat'
+                  AND v.halt_station IN ('KAD', 'MHLC', 'TKW', 'T5')
+            """, base_params)
+            middle_violations = cursor.fetchone()['count']
+
+            summary.update({
+                'up_line': len(trains_up),
+                'middle_line': len(trains_middle),
+                'no_ghat_data': len(trains_nodata),
+                'up_violations': up_violations,
+                'middle_violations': middle_violations
+            })
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "station": station,
+            "month": month,
+            "year": year,
+            "summary": summary,
+            "trains": {
+                "all": trains_all,
+                "up": trains_up,
+                "middle": trains_middle,
+                "violations": trains_violations,
+                "nodata": trains_nodata
+            }
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            {"error": f"Failed to fetch monthly station report: {str(e)}", "success": False},
             status_code=500
         )
 

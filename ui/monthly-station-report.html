@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monthly Station Report</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --surface: #ffffff;
+            --bg: #f1f5f9;
+            --text-main: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+            --up-line: #8b5cf6;
+            --middle-line: #06b6d4;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .page-title h1 { margin: 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+        .page-title p { margin: 4px 0 0 0; color: var(--text-light); font-size: 14px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn-success { background: var(--success); color: white; border-color: var(--success); }
+        .btn:hover { opacity: 0.9; }
+
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+
+        /* Filter Bar */
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            background: var(--surface);
+            padding: 16px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+        .filter-group select, .filter-group input {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 120px;
+        }
+        .filter-group select:focus, .filter-group input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stats-grid.pune-view {
+            grid-template-columns: repeat(4, 1fr);
+        }
+        .stats-grid.simple-view {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        .stat-card {
+            background: var(--surface);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+        .stat-card.total { border-left: 4px solid var(--primary); }
+        .stat-card.up-line { border-left: 4px solid var(--up-line); }
+        .stat-card.middle-line { border-left: 4px solid var(--middle-line); }
+        .stat-card.no-data { border-left: 4px solid var(--text-light); }
+        .stat-card.violations { border-left: 4px solid var(--danger); }
+
+        .stat-value { font-size: 32px; font-weight: 700; }
+        .stat-card.total .stat-value { color: var(--primary); }
+        .stat-card.up-line .stat-value { color: var(--up-line); }
+        .stat-card.middle-line .stat-value { color: var(--middle-line); }
+        .stat-card.no-data .stat-value { color: var(--text-light); }
+        .stat-card.violations .stat-value { color: var(--danger); }
+
+        .stat-label { font-size: 12px; color: var(--text-light); text-transform: uppercase; margin-top: 4px; }
+        .stat-sub { font-size: 11px; color: var(--text-light); margin-top: 2px; }
+
+        /* Violations Row */
+        .violations-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .violations-row.simple-view {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
+        .violation-card {
+            background: var(--surface);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .violation-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        .violation-icon.total { background: #fee2e2; color: var(--danger); }
+        .violation-icon.up { background: #ede9fe; color: var(--up-line); }
+        .violation-icon.middle { background: #cffafe; color: var(--middle-line); }
+        .violation-icon.percent { background: #fef3c7; color: var(--warning); }
+
+        .violation-info { flex: 1; }
+        .violation-value { font-size: 24px; font-weight: 700; color: var(--text-main); }
+        .violation-label { font-size: 12px; color: var(--text-light); }
+
+        /* Section Tabs */
+        .section-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .tab-btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: white;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .tab-btn:hover { background: #f8fafc; }
+        .tab-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+        .tab-btn .count {
+            background: rgba(0,0,0,0.1);
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-left: 6px;
+        }
+        .tab-btn.active .count {
+            background: rgba(255,255,255,0.2);
+        }
+
+        /* Table */
+        .table-card {
+            background: var(--surface);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .table-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .table-header h3 { margin: 0; font-size: 16px; }
+
+        .table-wrapper { overflow-x: auto; }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        th {
+            background: #f8fafc;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        tr:hover { background: #f8fafc; }
+
+        .train-number {
+            font-family: monospace;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .loco-number {
+            font-family: monospace;
+            color: var(--text-light);
+        }
+        .date-cell {
+            white-space: nowrap;
+        }
+        .line-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .line-badge.up { background: #ede9fe; color: var(--up-line); }
+        .line-badge.middle { background: #cffafe; color: var(--middle-line); }
+        .line-badge.unknown { background: #f1f5f9; color: var(--text-light); }
+
+        .violation-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #fee2e2;
+            color: var(--danger);
+        }
+
+        /* Loading / Empty */
+        .loading, .empty-state {
+            text-align: center;
+            padding: 60px 40px;
+            color: var(--text-light);
+        }
+        .empty-state i { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            background: #1e293b;
+            color: white;
+            font-size: 14px;
+            z-index: 2000;
+            display: none;
+        }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+        .toast.show { display: block; }
+
+        /* Hide sections */
+        .pune-only { display: none; }
+        .pune-view .pune-only { display: block; }
+
+        @media (max-width: 768px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .violations-row { grid-template-columns: 1fr; }
+            .filter-bar { flex-direction: column; align-items: stretch; }
+        }
+
+        @media print {
+            body { padding: 0; background: white; }
+            .page-header, .filter-bar, .header-actions, .btn, .section-tabs { display: none; }
+            .table-card { border: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="page-header">
+            <div class="page-title">
+                <h1><i class="fas fa-chart-bar"></i> Monthly Station Report</h1>
+                <p>RTIS analysis summary by station for the selected month</p>
+            </div>
+            <div class="header-actions">
+                <a href="reports.html" class="btn"><i class="fas fa-file-alt"></i> Analysis Reports</a>
+                <a href="./" class="btn"><i class="fas fa-arrow-left"></i> Back</a>
+            </div>
+        </div>
+
+        <!-- Filter Bar -->
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>Station</label>
+                <select id="stationSelect" onchange="loadReport()">
+                    <option value="">-- Select Station --</option>
+                    <optgroup label="Primary Stations">
+                        <option value="CSMT">CSMT</option>
+                        <option value="LTT">LTT</option>
+                        <option value="DR">Dadar</option>
+                        <option value="KYN">Kalyan</option>
+                        <option value="DIVA">Diva</option>
+                        <option value="PNVL">Panvel</option>
+                        <option value="BSR">Vasai Road</option>
+                        <option value="PUNE">Pune</option>
+                        <option value="IGP">Igatpuri</option>
+                        <option value="MMR">Manmad</option>
+                        <option value="JL">Jalgaon</option>
+                        <option value="ROHA">Roha</option>
+                        <option value="RN">Ratnagiri</option>
+                    </optgroup>
+                    <optgroup label="Other">
+                        <option value="OTHERS">Others (Edge Cases)</option>
+                    </optgroup>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Month</label>
+                <select id="monthSelect" onchange="loadReport()">
+                    <option value="1">January</option>
+                    <option value="2">February</option>
+                    <option value="3">March</option>
+                    <option value="4">April</option>
+                    <option value="5">May</option>
+                    <option value="6">June</option>
+                    <option value="7">July</option>
+                    <option value="8">August</option>
+                    <option value="9">September</option>
+                    <option value="10">October</option>
+                    <option value="11">November</option>
+                    <option value="12">December</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Year</label>
+                <select id="yearSelect" onchange="loadReport()">
+                    <option value="2025">2025</option>
+                    <option value="2026" selected>2026</option>
+                </select>
+            </div>
+            <div class="filter-group" style="align-self: flex-end;">
+                <button class="btn btn-primary" onclick="loadReport()">
+                    <i class="fas fa-sync-alt"></i> Generate Report
+                </button>
+            </div>
+        </div>
+
+        <!-- Stats Section -->
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card total">
+                <div class="stat-value" id="statTotal">-</div>
+                <div class="stat-label">Total Trains</div>
+            </div>
+            <div class="stat-card up-line pune-only">
+                <div class="stat-value" id="statUpLine">-</div>
+                <div class="stat-label">UP Line (T5)</div>
+            </div>
+            <div class="stat-card middle-line pune-only">
+                <div class="stat-value" id="statMiddleLine">-</div>
+                <div class="stat-label">Middle Line (TKW)</div>
+            </div>
+            <div class="stat-card no-data pune-only">
+                <div class="stat-value" id="statNoData">-</div>
+                <div class="stat-label">No Ghat Data</div>
+            </div>
+        </div>
+
+        <!-- Violations Row -->
+        <div class="violations-row" id="violationsRow">
+            <div class="violation-card">
+                <div class="violation-icon total"><i class="fas fa-exclamation-triangle"></i></div>
+                <div class="violation-info">
+                    <div class="violation-value" id="statViolations">-</div>
+                    <div class="violation-label">Total Ghat Violations</div>
+                </div>
+            </div>
+            <div class="violation-card pune-only">
+                <div class="violation-icon up"><i class="fas fa-arrow-up"></i></div>
+                <div class="violation-info">
+                    <div class="violation-value" id="statUpViolations">-</div>
+                    <div class="violation-label">UP Line Violations</div>
+                </div>
+            </div>
+            <div class="violation-card pune-only">
+                <div class="violation-icon middle"><i class="fas fa-arrows-alt-h"></i></div>
+                <div class="violation-info">
+                    <div class="violation-value" id="statMiddleViolations">-</div>
+                    <div class="violation-label">Middle Line Violations</div>
+                </div>
+            </div>
+            <div class="violation-card">
+                <div class="violation-icon percent"><i class="fas fa-percent"></i></div>
+                <div class="violation-info">
+                    <div class="violation-value" id="statViolationPercent">-</div>
+                    <div class="violation-label">Violation Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section Tabs -->
+        <div class="section-tabs" id="sectionTabs">
+            <button class="tab-btn active" data-tab="all" onclick="switchTab('all')">
+                All Trains <span class="count" id="countAll">0</span>
+            </button>
+            <button class="tab-btn pune-only" data-tab="up" onclick="switchTab('up')">
+                UP Line (T5) <span class="count" id="countUp">0</span>
+            </button>
+            <button class="tab-btn pune-only" data-tab="middle" onclick="switchTab('middle')">
+                Middle Line (TKW) <span class="count" id="countMiddle">0</span>
+            </button>
+            <button class="tab-btn" data-tab="violations" onclick="switchTab('violations')">
+                With Violations <span class="count" id="countViolations">0</span>
+            </button>
+            <button class="tab-btn pune-only" data-tab="nodata" onclick="switchTab('nodata')">
+                No Ghat Data <span class="count" id="countNoData">0</span>
+            </button>
+        </div>
+
+        <!-- Table -->
+        <div class="table-card">
+            <div class="table-header">
+                <h3 id="tableTitle">Train List</h3>
+                <button class="btn btn-success" onclick="exportReport()">
+                    <i class="fas fa-download"></i> Export CSV
+                </button>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Train No.</th>
+                            <th>Loco No.</th>
+                            <th>From</th>
+                            <th>To</th>
+                            <th class="pune-only">Line</th>
+                            <th>Violations</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody">
+                        <tr><td colspan="7" class="empty-state">
+                            <i class="fas fa-filter"></i><br>
+                            Select a station and click Generate Report
+                        </td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const API_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis' : '';
+
+        let reportData = {
+            summary: {},
+            trains: {
+                all: [],
+                up: [],
+                middle: [],
+                violations: [],
+                nodata: []
+            }
+        };
+        let currentTab = 'all';
+        let isPuneStation = false;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set current month
+            const now = new Date();
+            document.getElementById('monthSelect').value = now.getMonth() + 1;
+            document.getElementById('yearSelect').value = now.getFullYear();
+        });
+
+        function updateViewMode(station) {
+            isPuneStation = station === 'PUNE';
+            const container = document.querySelector('.container');
+            const statsGrid = document.getElementById('statsGrid');
+            const violationsRow = document.getElementById('violationsRow');
+
+            if (isPuneStation) {
+                container.classList.add('pune-view');
+                statsGrid.classList.remove('simple-view');
+                statsGrid.classList.add('pune-view');
+                violationsRow.classList.remove('simple-view');
+            } else {
+                container.classList.remove('pune-view');
+                statsGrid.classList.add('simple-view');
+                statsGrid.classList.remove('pune-view');
+                violationsRow.classList.add('simple-view');
+            }
+
+            // Update table header
+            document.querySelectorAll('th.pune-only, td.pune-only').forEach(el => {
+                el.style.display = isPuneStation ? '' : 'none';
+            });
+        }
+
+        async function loadReport() {
+            const station = document.getElementById('stationSelect').value;
+            const month = document.getElementById('monthSelect').value;
+            const year = document.getElementById('yearSelect').value;
+
+            if (!station) {
+                showToast('Please select a station', 'error');
+                return;
+            }
+
+            updateViewMode(station);
+
+            document.getElementById('tableBody').innerHTML =
+                '<tr><td colspan="7" class="loading"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/monthly-station-report?station=${station}&month=${month}&year=${year}`);
+                const data = await res.json();
+
+                if (data.success) {
+                    reportData = data;
+                    updateStats(data.summary);
+                    updateCounts(data.trains);
+                    switchTab('all');
+                } else {
+                    showToast(data.error || 'Failed to load report', 'error');
+                    document.getElementById('tableBody').innerHTML =
+                        '<tr><td colspan="7" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Failed to load data</td></tr>';
+                }
+            } catch (e) {
+                console.error('Load error:', e);
+                showToast('Error loading report', 'error');
+                document.getElementById('tableBody').innerHTML =
+                    '<tr><td colspan="7" class="empty-state"><i class="fas fa-exclamation-triangle"></i><br>Error loading data</td></tr>';
+            }
+        }
+
+        function updateStats(summary) {
+            document.getElementById('statTotal').textContent = summary.total_trains || 0;
+            document.getElementById('statViolations').textContent = summary.total_violations || 0;
+
+            const violationPercent = summary.total_trains > 0
+                ? ((summary.total_violations / summary.total_trains) * 100).toFixed(1) + '%'
+                : '-';
+            document.getElementById('statViolationPercent').textContent = violationPercent;
+
+            if (isPuneStation) {
+                document.getElementById('statUpLine').textContent = summary.up_line || 0;
+                document.getElementById('statMiddleLine').textContent = summary.middle_line || 0;
+                document.getElementById('statNoData').textContent = summary.no_ghat_data || 0;
+                document.getElementById('statUpViolations').textContent = summary.up_violations || 0;
+                document.getElementById('statMiddleViolations').textContent = summary.middle_violations || 0;
+            }
+        }
+
+        function updateCounts(trains) {
+            document.getElementById('countAll').textContent = trains.all?.length || 0;
+            document.getElementById('countViolations').textContent = trains.violations?.length || 0;
+
+            if (isPuneStation) {
+                document.getElementById('countUp').textContent = trains.up?.length || 0;
+                document.getElementById('countMiddle').textContent = trains.middle?.length || 0;
+                document.getElementById('countNoData').textContent = trains.nodata?.length || 0;
+            }
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+
+            // Update tab buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === tab);
+            });
+
+            // Update table title
+            const titles = {
+                all: 'All Trains',
+                up: 'UP Line (T5) Trains',
+                middle: 'Middle Line (TKW) Trains',
+                violations: 'Trains with Ghat Violations',
+                nodata: 'Trains without Ghat Data'
+            };
+            document.getElementById('tableTitle').textContent = titles[tab] || 'Train List';
+
+            // Render table
+            renderTable(reportData.trains[tab] || []);
+        }
+
+        function renderTable(trains) {
+            const tbody = document.getElementById('tableBody');
+
+            if (!trains || trains.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><i class="fas fa-inbox"></i><br>No trains found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = trains.map(t => `
+                <tr>
+                    <td class="date-cell">${formatDate(t.working_date)}</td>
+                    <td class="train-number">${t.train_number}</td>
+                    <td class="loco-number">${t.loco_number}</td>
+                    <td>${t.from_station}</td>
+                    <td>${t.to_station}</td>
+                    ${isPuneStation ? `<td class="pune-only">${getLineBadge(t.line_type)}</td>` : ''}
+                    <td>${t.violation_count > 0 ? `<span class="violation-badge">${t.violation_count}</span>` : '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        function getLineBadge(lineType) {
+            if (lineType === 'UP') {
+                return '<span class="line-badge up">UP (T5)</span>';
+            } else if (lineType === 'MIDDLE') {
+                return '<span class="line-badge middle">Middle (TKW)</span>';
+            } else {
+                return '<span class="line-badge unknown">-</span>';
+            }
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return '-';
+            const d = new Date(dateStr);
+            return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        }
+
+        function exportReport() {
+            const trains = reportData.trains[currentTab] || [];
+            if (trains.length === 0) {
+                showToast('No data to export', 'error');
+                return;
+            }
+
+            const station = document.getElementById('stationSelect').value;
+            const month = document.getElementById('monthSelect').value;
+            const year = document.getElementById('yearSelect').value;
+
+            // CSV header
+            let headers = ['Date', 'Train No', 'Loco No', 'From', 'To'];
+            if (isPuneStation) headers.push('Line');
+            headers.push('Violations');
+
+            let csv = headers.join(',') + '\n';
+
+            // CSV rows
+            trains.forEach(t => {
+                let row = [
+                    t.working_date,
+                    t.train_number,
+                    t.loco_number,
+                    t.from_station,
+                    t.to_station
+                ];
+                if (isPuneStation) row.push(t.line_type || '');
+                row.push(t.violation_count || 0);
+                csv += row.map(v => `"${v}"`).join(',') + '\n';
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `station_report_${station}_${year}_${month}_${currentTab}.csv`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            showToast('Report exported', 'success');
+        }
+
+        function showToast(message, type = '') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => { toast.className = 'toast'; }, 3000);
+        }
+    </script>
+</body>
+</html>
