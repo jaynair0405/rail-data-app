@@ -59,20 +59,53 @@ DF: pl.DataFrame | None = None  # legacy single-DF placeholder
 
 # Runs are keyed by run_id to allow multiple simultaneous uploads even if users share credentials.
 # Each run stores owning user_id for access control. TTL avoids unbounded memory growth.
+# DataFrames are stored as temp files to reduce memory usage.
 RUNS: Dict[str, Dict[str, Any]] = {}
 RUNS_LOCK = threading.Lock()
-RUN_TTL_SECONDS = 60 * 60 * 6  # 6 hours
+RUN_TTL_SECONDS = 60 * 60 * 1  # 1 hour (reduced from 6 to limit memory)
+MAX_RUNS = 20  # Maximum concurrent runs to prevent unbounded growth
+
+# Temp directory for storing DataFrames (disk instead of RAM)
+RUNS_TEMP_DIR = "/tmp/rtis_runs"
+os.makedirs(RUNS_TEMP_DIR, exist_ok=True)
 
 # Idempotency cache per user (keyed by Idempotency-Key header)
 IDEMPOTENCY_CACHE: Dict[Tuple[int, str], Dict[str, Any]] = {}
 
 
+def _cleanup_orphan_files() -> None:
+    """Remove temp files older than TTL (handles crash scenarios)."""
+    now = time.time()
+    try:
+        for filename in os.listdir(RUNS_TEMP_DIR):
+            file_path = os.path.join(RUNS_TEMP_DIR, filename)
+            if os.path.isfile(file_path):
+                file_age = now - os.path.getmtime(file_path)
+                if file_age > RUN_TTL_SECONDS:
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
 def _purge_expired_runs() -> None:
+    """Purge expired runs from memory AND delete their temp files."""
     now = time.time()
     with RUNS_LOCK:
         expired = [rid for rid, run in RUNS.items() if now - run.get("uploaded_at", 0) > RUN_TTL_SECONDS]
         for rid in expired:
-            RUNS.pop(rid, None)
+            run = RUNS.pop(rid, None)
+            # Delete temp file if exists
+            if run:
+                file_path = run.get("file_path")
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+
         expired_keys = [
             key for key, meta in IDEMPOTENCY_CACHE.items()
             if now - meta.get("uploaded_at", 0) > RUN_TTL_SECONDS
@@ -80,13 +113,34 @@ def _purge_expired_runs() -> None:
         for key in expired_keys:
             IDEMPOTENCY_CACHE.pop(key, None)
 
+    # Also clean orphan files
+    _cleanup_orphan_files()
+
 
 def _set_user_run(run_id: str, user_id: int, df: pl.DataFrame | None, files: List[dict[str, Any]]) -> None:
-    # Store DF for a specific run; called after successful upload
+    """Store DF to temp file instead of memory."""
     _purge_expired_runs()
+
+    file_path = None
+    if df is not None:
+        file_path = os.path.join(RUNS_TEMP_DIR, f"{run_id}.parquet")
+        df.write_parquet(file_path)
+
     with RUNS_LOCK:
+        # Evict oldest if at max capacity
+        if len(RUNS) >= MAX_RUNS:
+            oldest_rid = min(RUNS.items(), key=lambda x: x[1].get("uploaded_at", 0))[0]
+            old_run = RUNS.pop(oldest_rid, None)
+            if old_run:
+                old_path = old_run.get("file_path")
+                if old_path and os.path.exists(old_path):
+                    try:
+                        os.remove(old_path)
+                    except Exception:
+                        pass
+
         RUNS[run_id] = {
-            "df": df,
+            "file_path": file_path,  # Store path, NOT the DataFrame
             "uploaded_at": time.time(),
             "files": files,
             "user_id": user_id,
@@ -95,7 +149,7 @@ def _set_user_run(run_id: str, user_id: int, df: pl.DataFrame | None, files: Lis
 
 
 def _get_user_run(request: Request, run_id: str | None) -> Tuple[dict, pl.DataFrame]:
-    """Return (user, df) for the current request, enforcing auth and run isolation."""
+    """Return (user, df) for the current request, loading DF from temp file."""
     user = get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -110,16 +164,23 @@ def _get_user_run(request: Request, run_id: str | None) -> Tuple[dict, pl.DataFr
     if not run:
         raise HTTPException(status_code=400, detail="no data loaded for this run_id")
 
-    # Enforce ownership if possible (still allows shared credential scenarios to be isolated per run)
+    # Enforce ownership
     owner_id = run.get("user_id")
     if owner_id is not None and owner_id != user.get("id"):
         raise HTTPException(status_code=403, detail="run_id does not belong to this user")
 
-    df = run.get("df")
-    if df is None:
+    file_path = run.get("file_path")
+    if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=400, detail="no data loaded for this run_id")
 
+    # Load DataFrame from temp file on demand
+    df = pl.read_parquet(file_path)
+
     return user, df
+
+
+# Clean orphan files on startup
+_cleanup_orphan_files()
 
 # ------------------------------
 # Base-Data: Trains (robust loader)
