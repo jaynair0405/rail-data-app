@@ -446,6 +446,7 @@
     <div class="actions">
       <button id="btnAnalyze">Analyze</button>
       <button id="btnExport" class="secondary">Export PDF</button>
+      <button id="btnSavePdf" class="secondary" style="display:none; background: #ecfdf5; border-color: #6ee7b7; color: #047857;">📁 Save & Export PDF</button>
       <button id="btnSaveAnalysis" class="secondary" style="display:none;">💾 Save Analysis</button>
     </div>
     <div class="actions" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0; display: flex; gap: 10px; flex-wrap: wrap;">
@@ -1835,6 +1836,7 @@ async function analyzeAndPlot(){
   __analysisCompleted = true;
   __analysisSaved = false;
   document.getElementById("btnExport").disabled = false;
+  document.getElementById("btnSavePdf").style.display = "inline-block";
 
   // Show bottom save section (forces user to scroll through data)
   const saveSection = document.getElementById("saveAnalysisSection");
@@ -1878,6 +1880,71 @@ document.getElementById("btnExport").onclick = async () => {
   } catch (err) {
     alert("Export failed. Please try again.");
     console.error(err);
+  }
+};
+
+// Save & Export PDF to server (stores in LP's folder, max 20 per LP)
+document.getElementById("btnSavePdf").onclick = async () => {
+  if (!__analysisCompleted) {
+    alert("Please run analysis first");
+    return;
+  }
+
+  // Check if analysis has been saved (we need analysis_id)
+  if (!window.__existingAnalysisId) {
+    alert("Please save the analysis first before saving the PDF.\n\nClick 'Save Analysis' button first.");
+    return;
+  }
+
+  const btn = document.getElementById("btnSavePdf");
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "⏳ Saving PDF...";
+
+  try {
+    const criteria = getCriteria();
+    criteria.analysis_id = window.__existingAnalysisId;
+    criteria.lp_hrms_id = document.getElementById("lpHrmsId").value || criteria.lp_hrms_id;
+
+    const r = await fetch(`${API}/api/lp-reports/save?run_id=${window.__currentRunId || ''}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(criteria)
+    });
+
+    const data = await r.json();
+
+    if (!r.ok || !data.success) {
+      alert("Failed to save PDF:\n" + (data.error || "Unknown error"));
+      return;
+    }
+
+    // Also download the PDF locally
+    const pdfUrl = data.path;
+    const a = document.createElement("a");
+    a.href = pdfUrl;
+    a.download = data.filename;
+    a.target = "_blank";
+    a.click();
+
+    btn.textContent = "✅ PDF Saved!";
+    btn.style.background = "#d1fae5";
+
+    if (data.deleted_old) {
+      alert(`PDF saved successfully!\n\nNote: Oldest PDF was removed to maintain 20 report limit for this LP.`);
+    } else {
+      alert("PDF saved successfully!\n\nThe report has been stored and is now accessible from LP Reports.");
+    }
+
+  } catch (err) {
+    alert("Failed to save PDF. Please try again.");
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.style.background = "#ecfdf5";
+    }, 3000);
   }
 };
 

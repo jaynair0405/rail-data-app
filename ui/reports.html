@@ -282,7 +282,7 @@
     
     <!-- Back Button -->
     <div style="margin-bottom: 20px;">
-        <a href="/spm/rtis/rtis" class="btn">
+        <a href="index.html" class="btn">
             <i class="fa-solid fa-arrow-left"></i> Back to RTIS
         </a>
     </div>
@@ -492,7 +492,10 @@
 
 <script>
 // Configuration
-const API_BASE = window.location.origin + '/spm/rtis/api/reports';
+const API_BASE = window.location.pathname.includes('/spm/rtis')
+    ? window.location.origin + '/spm/rtis/api/reports'
+    : window.location.origin + '/api/reports';
+const PDF_BASE = window.location.pathname.includes('/spm/rtis') ? '/spm/rtis/reports/lp' : '/reports/lp';
 let currentPage = 1;
 let searchTimeout = null;
 
@@ -712,7 +715,7 @@ async function loadAllAnalyses() {
                         <td>${item.route || '-'}</td>
                         <td>${item.analyst_name || '-'}</td>
                         <td class="actions-cell">
-                            ${item.pdf_filename ? `<a href="/spm/rtis/reports/${item.pdf_filename}" target="_blank">View PDF</a>` : '-'}
+                            ${item.pdf_filename && item.lp_hrms_id ? `<a href="${PDF_BASE}/${item.lp_hrms_id}/${item.pdf_filename}" target="_blank">View PDF</a>` : '-'}
                         </td>
                     </tr>
                 `).join('');
@@ -821,7 +824,7 @@ async function showLPDetails(hrmsId) {
                     <td>${item.route || '-'}</td>
                     <td>${item.analyst_name || '-'}</td>
                     <td class="actions-cell">
-                        ${item.pdf_filename ? `<a href="/spm/rtis/reports/${item.pdf_filename}" target="_blank">View PDF</a>` : '-'}
+                        ${item.pdf_filename ? `<a href="${PDF_BASE}/${hrmsId}/${item.pdf_filename}" target="_blank">View PDF</a>` : '-'}
                     </td>
                 </tr>
             `).join('') : '<tr><td colspan="5" style="text-align:center;">No analyses found</td></tr>';

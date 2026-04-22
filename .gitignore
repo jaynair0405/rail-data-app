@@ -48,6 +48,7 @@ RailDataApp.exe
 # User-generated reports
 *.pdf
 *.xlsx
+reports/
 
 # Temporary files
 *.tmp

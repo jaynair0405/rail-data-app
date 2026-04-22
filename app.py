@@ -47,6 +47,11 @@ app = FastAPI(
 )
 app.mount("/ui", StaticFiles(directory="ui", html=True), name="ui")
 
+# Mount reports folder for serving LP PDFs
+REPORTS_DIR = os.path.join(os.path.dirname(__file__), "reports")
+os.makedirs(os.path.join(REPORTS_DIR, "lp"), exist_ok=True)
+app.mount("/reports", StaticFiles(directory=REPORTS_DIR), name="reports")
+
 @app.get("/")
 def root():
     # return RedirectResponse(url="/ui/")
@@ -7001,6 +7006,241 @@ async def get_monthly_station_report(
         traceback.print_exc()
         return JSONResponse(
             {"error": f"Failed to fetch monthly station report: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+# ------------------------------
+# LP Report PDF Storage APIs
+# ------------------------------
+
+MAX_LP_REPORTS = 20  # Maximum PDFs to keep per LP
+
+@app.post("/api/lp-reports/save")
+async def save_lp_report(
+    request: Request,
+    criteria: dict = Body(...),
+    run_id: str | None = Query(None)
+):
+    """
+    Save analysis PDF to LP's folder.
+    Auto-deletes oldest if LP already has 20 PDFs.
+    """
+    try:
+        # Get user and filtered DataFrame
+        user, filtered = _get_user_run(request, run_id)
+
+        # Get LP HRMS ID from criteria or filtered data
+        lp_hrms_id = criteria.get("lp_hrms_id")
+        if not lp_hrms_id:
+            # Try to get from filtered data
+            if "LP_HRMS_ID" in filtered.columns and len(filtered) > 0:
+                lp_hrms_id = str(filtered["LP_HRMS_ID"][0])
+
+        if not lp_hrms_id:
+            return JSONResponse({"error": "LP HRMS ID not found"}, status_code=400)
+
+        analysis_id = criteria.get("analysis_id")
+        if not analysis_id:
+            return JSONResponse({"error": "Analysis ID required"}, status_code=400)
+
+        # Create LP folder if not exists
+        lp_folder = os.path.join(REPORTS_DIR, "lp", lp_hrms_id)
+        os.makedirs(lp_folder, exist_ok=True)
+
+        # Check and enforce 20 PDF limit
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Count existing PDFs for this LP
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM div_rtis_analyses
+            WHERE lp_hrms_id = %s AND pdf_filename IS NOT NULL AND pdf_filename != ''
+        """, [lp_hrms_id])
+        count_result = cursor.fetchone()
+        current_count = count_result['count'] if count_result else 0
+
+        # If at limit, delete oldest
+        if current_count >= MAX_LP_REPORTS:
+            # Get oldest reports to delete
+            delete_count = current_count - MAX_LP_REPORTS + 1
+            cursor.execute("""
+                SELECT id, pdf_filename FROM div_rtis_analyses
+                WHERE lp_hrms_id = %s AND pdf_filename IS NOT NULL AND pdf_filename != ''
+                ORDER BY working_date ASC, created_at ASC
+                LIMIT %s
+            """, [lp_hrms_id, delete_count])
+            old_reports = cursor.fetchall()
+
+            for old_report in old_reports:
+                # Delete file from disk
+                old_file_path = os.path.join(REPORTS_DIR, "lp", lp_hrms_id, old_report['pdf_filename'])
+                if os.path.exists(old_file_path):
+                    os.remove(old_file_path)
+
+                # Clear pdf_filename in database
+                cursor.execute("""
+                    UPDATE div_rtis_analyses SET pdf_filename = NULL WHERE id = %s
+                """, [old_report['id']])
+
+            conn.commit()
+
+        # Generate PDF (reuse existing logic from export_pdf)
+        # Apply criteria to filter data
+        filtered = apply_criteria(filtered, criteria)
+        if filtered.height == 0:
+            cursor.close()
+            conn.close()
+            return JSONResponse({"error": "No data matches criteria"}, status_code=400)
+
+        # Build chart payload and summary
+        chart_payload = _build_chart_payload(filtered, criteria)
+        unified_data = _braking_profile_full_curve(filtered, BRAKE_OFFSETS)
+        brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
+        summary = _build_summary_details(filtered, criteria)
+
+        # Compute boundary and ghat sections
+        to_station = (criteria.get("to_station_equals") or "").strip().upper()
+        from_station = (criteria.get("from_station_equals") or "").strip().upper()
+        direction = (criteria.get("direction_equals") or "").strip().upper()
+        boundary_type = ROUTE_BOUNDARY_MAP.get(to_station) or ROUTE_BOUNDARY_MAP.get(from_station)
+        boundary_stations = ZONE_BOUNDARY_STATIONS.get(boundary_type, []) if boundary_type else []
+        boundary_row_idx = _find_boundary_row_index(filtered, boundary_stations) if boundary_stations else None
+        ghat_halt_indices = _compute_ghat_section_halts(filtered, unified_data, direction)
+
+        # Render charts and PDF
+        speed_chart = _render_speed_chart_image(chart_payload)
+        brake_charts = _render_brake_curve_images(unified_data)
+        sectional_charts = _generate_sectional_charts(filtered, criteria)
+
+        pdf_buffer = _render_pdf_report(
+            summary, speed_chart, brake_charts, unified_data,
+            brake_tests, sectional_charts, boundary_row_idx, ghat_halt_indices
+        )
+
+        # Generate filename
+        train_num = criteria.get("train_number", "TRAIN")
+        working_date = criteria.get("working_date", "")
+        if working_date:
+            date_str = working_date.replace("-", "")
+        else:
+            date_str = datetime.now().strftime("%Y%m%d")
+        timestamp = int(time.time())
+        filename = f"{train_num}_{date_str}_{timestamp}.pdf"
+
+        # Save PDF to disk
+        file_path = os.path.join(lp_folder, filename)
+        with open(file_path, "wb") as f:
+            f.write(pdf_buffer.getvalue())
+
+        # Update database with pdf_filename
+        cursor.execute("""
+            UPDATE div_rtis_analyses SET pdf_filename = %s WHERE id = %s
+        """, [filename, analysis_id])
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "message": "PDF saved successfully",
+            "filename": filename,
+            "path": f"/reports/lp/{lp_hrms_id}/{filename}",
+            "deleted_old": current_count >= MAX_LP_REPORTS
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            {"error": f"Failed to save LP report: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.get("/api/lp-reports/{hrms_id}")
+async def get_lp_reports(request: Request, hrms_id: str):
+    """Get list of saved PDFs for an LP"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT id, train_number, working_date, loco_number, pdf_filename, created_at
+            FROM div_rtis_analyses
+            WHERE lp_hrms_id = %s AND pdf_filename IS NOT NULL AND pdf_filename != ''
+            ORDER BY working_date DESC
+            LIMIT 20
+        """, [hrms_id])
+        reports = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Format dates and add full path
+        for report in reports:
+            if report['working_date']:
+                report['working_date'] = report['working_date'].strftime('%Y-%m-%d') if hasattr(report['working_date'], 'strftime') else str(report['working_date'])
+            if report['created_at']:
+                report['created_at'] = report['created_at'].strftime('%Y-%m-%d %H:%M') if hasattr(report['created_at'], 'strftime') else str(report['created_at'])
+            report['pdf_url'] = f"/reports/lp/{hrms_id}/{report['pdf_filename']}"
+
+        return {
+            "success": True,
+            "hrms_id": hrms_id,
+            "reports": reports,
+            "count": len(reports)
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch LP reports: {str(e)}", "success": False},
+            status_code=500
+        )
+
+
+@app.delete("/api/lp-reports/{hrms_id}/{report_id}")
+async def delete_lp_report(request: Request, hrms_id: str, report_id: int):
+    """Delete a specific LP report"""
+    try:
+        user = get_current_user(request)
+        if not user:
+            return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get the report details
+        cursor.execute("""
+            SELECT pdf_filename FROM div_rtis_analyses WHERE id = %s AND lp_hrms_id = %s
+        """, [report_id, hrms_id])
+        report = cursor.fetchone()
+
+        if not report or not report['pdf_filename']:
+            cursor.close()
+            conn.close()
+            return JSONResponse({"error": "Report not found"}, status_code=404)
+
+        # Delete file from disk
+        file_path = os.path.join(REPORTS_DIR, "lp", hrms_id, report['pdf_filename'])
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        # Clear pdf_filename in database
+        cursor.execute("""
+            UPDATE div_rtis_analyses SET pdf_filename = NULL WHERE id = %s
+        """, [report_id])
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return {"success": True, "message": "Report deleted"}
+
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to delete report: {str(e)}", "success": False},
             status_code=500
         )
 
