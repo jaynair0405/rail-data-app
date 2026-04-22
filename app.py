@@ -7037,8 +7037,9 @@ async def save_lp_report(
             if "LP_HRMS_ID" in filtered.columns and len(filtered) > 0:
                 lp_hrms_id = str(filtered["LP_HRMS_ID"][0])
 
-        if not lp_hrms_id:
-            return JSONResponse({"error": "LP HRMS ID not found"}, status_code=400)
+        # Handle "Other Division Crew" - use special folder
+        if not lp_hrms_id or lp_hrms_id.strip() == "":
+            lp_hrms_id = "other_division"
 
         analysis_id = criteria.get("analysis_id")
         if not analysis_id:
@@ -7048,20 +7049,22 @@ async def save_lp_report(
         lp_folder = os.path.join(REPORTS_DIR, "lp", lp_hrms_id)
         os.makedirs(lp_folder, exist_ok=True)
 
-        # Check and enforce 20 PDF limit
+        # Check and enforce 20 PDF limit (skip for other_division)
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
+        current_count = 0
 
-        # Count existing PDFs for this LP
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM div_rtis_analyses
-            WHERE lp_hrms_id = %s AND pdf_filename IS NOT NULL AND pdf_filename != ''
-        """, [lp_hrms_id])
-        count_result = cursor.fetchone()
-        current_count = count_result['count'] if count_result else 0
+        if lp_hrms_id != "other_division":
+            # Count existing PDFs for this LP
+            cursor.execute("""
+                SELECT COUNT(*) as count FROM div_rtis_analyses
+                WHERE lp_hrms_id = %s AND pdf_filename IS NOT NULL AND pdf_filename != ''
+            """, [lp_hrms_id])
+            count_result = cursor.fetchone()
+            current_count = count_result['count'] if count_result else 0
 
-        # If at limit, delete oldest
-        if current_count >= MAX_LP_REPORTS:
+        # If at limit, delete oldest (only for tracked LPs)
+        if lp_hrms_id != "other_division" and current_count >= MAX_LP_REPORTS:
             # Get oldest reports to delete
             delete_count = current_count - MAX_LP_REPORTS + 1
             cursor.execute("""
@@ -7118,15 +7121,8 @@ async def save_lp_report(
             brake_tests, sectional_charts, boundary_row_idx, ghat_halt_indices
         )
 
-        # Generate filename
-        train_num = criteria.get("train_number", "TRAIN")
-        working_date = criteria.get("working_date", "")
-        if working_date:
-            date_str = working_date.replace("-", "")
-        else:
-            date_str = datetime.now().strftime("%Y%m%d")
-        timestamp = int(time.time())
-        filename = f"{train_num}_{date_str}_{timestamp}.pdf"
+        # Generate filename using same convention as export_pdf
+        filename = _generate_pdf_filename(filtered, criteria)
 
         # Save PDF to disk
         file_path = os.path.join(lp_folder, filename)
