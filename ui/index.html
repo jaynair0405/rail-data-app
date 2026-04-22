@@ -1920,7 +1920,7 @@ document.getElementById("btnSavePdf").onclick = async () => {
     }
 
     // Also download the PDF locally
-    const pdfUrl = data.path;
+    const pdfUrl = API + data.path;
     const a = document.createElement("a");
     a.href = pdfUrl;
     a.download = data.filename;
