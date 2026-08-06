@@ -24,8 +24,8 @@
 /var/www/html/                     ← bbtro (Node.js)
   └── PM2: railway-system
 
-/var/www/rail-analysis/            ← rail-data-app (Python)
-  └── PM2: rail-analysis (to be added)
+/home/railway/rail-data-app/            ← rail-data-app (Python)
+  └── PM2: rtis
 ```
 
 ---
@@ -58,7 +58,7 @@ GitHub:
 ├── html/                          ← git clone bbtro
 │   └── git pull to update
 │
-└── rail-analysis/                 ← git clone rail-data-app
+└── rail-data-app/                 ← git clone rail-data-app (in /home/railway)
     └── git pull to update
 ```
 
@@ -116,7 +116,7 @@ ssh railway@93.127.198.125
 # Navigate to web root
 cd /var/www
 
-# If /var/www/rail-analysis exists from manual upload, remove it:
+# If /home/railway/rail-data-app exists from manual upload, remove it:
 sudo rm -rf rail-analysis
 
 # Clone from GitHub
@@ -150,7 +150,7 @@ MYSQL_PASSWORD=4310@Chakkara
 
 **Start with PM2:**
 ```bash
-pm2 start .venv/bin/uvicorn --name "rail-analysis" -- app:app --host 0.0.0.0 --port 8765 --workers 4
+pm2 start .venv/bin/uvicorn --name "rtis" -- app:app --host 0.0.0.0 --port 8765 --workers 4
 pm2 save
 pm2 list
 ```
@@ -221,7 +221,7 @@ git push origin main
 ssh railway@93.127.198.125
 
 # Pull latest changes
-cd /var/www/rail-analysis
+cd /home/railway/rail-data-app
 git pull origin main
 
 # If requirements.txt changed:
@@ -229,15 +229,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # Restart application
-pm2 restart rail-analysis
+pm2 restart rtis
 
 # Check logs
-pm2 logs rail-analysis --lines 50
+pm2 logs rtis --lines 50
 ```
 
 **One-liner deployment:**
 ```bash
-ssh railway@93.127.198.125 "cd /var/www/rail-analysis && git pull && source .venv/bin/activate && pip install -r requirements.txt && pm2 restart rail-analysis"
+ssh railway@93.127.198.125 "cd /home/railway/rail-data-app && git pull && source .venv/bin/activate && pip install -r requirements.txt && pm2 restart rtis"
 ```
 
 ---
@@ -263,7 +263,7 @@ cd ~/Desktop/rail-data-app
 git add .
 git commit -m "Update for new database schema"
 git push
-ssh railway@93.127.198.125 "cd /var/www/rail-analysis && git pull && pm2 restart rail-analysis"
+ssh railway@93.127.198.125 "cd /home/railway/rail-data-app && git pull && pm2 restart rtis"
 ```
 
 ---
@@ -376,7 +376,7 @@ __pycache__/
 **Quick rollback:**
 ```bash
 # On server
-cd /var/www/html  # or /var/www/rail-analysis
+cd /var/www/html  # or /home/railway/rail-data-app
 
 # Revert to previous commit
 git log --oneline  # Find previous commit hash
@@ -459,7 +459,7 @@ pm2 restart railway-system
 # On server
 pm2 list                          # See all processes
 pm2 logs railway-system          # Node.js logs
-pm2 logs rail-analysis           # Python logs
+pm2 logs rtis           # Python logs
 pm2 monit                        # Real-time monitoring
 
 # Check if apps are responding
@@ -477,7 +477,7 @@ cd /var/www/html
 git status                       # Should be clean
 git log --oneline -5            # Last 5 commits
 
-cd /var/www/rail-analysis
+cd /home/railway/rail-data-app
 git status
 git log --oneline -5
 ```
@@ -511,12 +511,12 @@ echo "✓ Deployment complete!"
 
 echo "Deploying rail-data-app..."
 ssh railway@93.127.198.125 << 'EOF'
-cd /var/www/rail-analysis
+cd /home/railway/rail-data-app
 git pull origin main
 source .venv/bin/activate
 pip install -r requirements.txt
-pm2 restart rail-analysis
-pm2 logs rail-analysis --lines 20
+pm2 restart rtis
+pm2 logs rtis --lines 20
 EOF
 echo "✓ Deployment complete!"
 ```
@@ -537,7 +537,7 @@ chmod +x deploy-bbtro.sh deploy-python.sh
 **Two repos, two deployments, clean workflow:**
 
 1. **bbtro** (Node.js) → GitHub → `/var/www/html/`
-2. **rail-data-app** (Python) → GitHub → `/var/www/rail-analysis/`
+2. **rail-data-app** (Python) → GitHub → `/home/railway/rail-data-app/`
 
 **Deploy process:**
 ```
