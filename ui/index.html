@@ -1217,15 +1217,16 @@ function renderBrakingTable(halts) {
     const cells = BRAKE_OFFSETS.map(offset => {
       const key = String(offset);
       const reading = halt.speeds && halt.speeds[key];
-      const val = reading && typeof reading.speed === "number" ? reading.speed.toFixed(1) : "—";
+      const ghatStar = reading && reading.measured_at_m ? "*" : "";
+      const val = reading && typeof reading.speed === "number" ? reading.speed.toFixed(1) + ghatStar : "—";
       let warnClass = "";
       const numeric = reading && typeof reading.speed === "number" ? reading.speed : null;
       if (numeric !== null) {
         // Use zone-based threshold from API (70 for Mumbai suburban, 60/90 for mainline/Konkan)
         const threshold1000m = halt.threshold_1000m || 70;
-        if (offset === 1000 && numeric > threshold1000m) warnClass = "warn";
+        if (offset === 1000 && numeric >= threshold1000m + 1) warnClass = "warn";
         // 400m threshold only applies in Zone A (suburban); null in Zone B - uses 300m data
-        if (offset === 300 && halt.threshold_400m != null && numeric > halt.threshold_400m) {
+        if (offset === 300 && halt.threshold_400m != null && numeric >= halt.threshold_400m + 1) {
           warnClass = "warn";
         }
         if (offset === 100) {
@@ -1254,7 +1255,7 @@ function renderBrakingTable(halts) {
   if (footnote) {
     const hasGhatSection = halts.some(h => h.in_ghat_section);
     if (hasGhatSection) {
-      footnote.textContent = "▲ Ghat section (steep gradient descent) — 40 km/h limit at 1000m";
+      footnote.textContent = "▲ Ghat section (steep gradient descent) — 40 km/h limit; * speed measured at 800 m before halt";
       footnote.style.display = "block";
     } else {
       footnote.style.display = "none";

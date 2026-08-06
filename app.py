@@ -218,11 +218,15 @@ STATION_SEQUENCE_MAX_STATIONS = 400
 STATION_ADJACENCY_MIN_RUN = 4
 STATION_YARD_TOLERANCE = 8
 BRAKE_OFFSETS = [1000, 300, 200, 100, 50, 20]
-# Offsets for violations analysis (includes ghat-specific distances)
-VIOLATIONS_OFFSETS = BRAKE_OFFSETS + [900, 800]
-# Ghat distance thresholds: default 900m, specific stations use 800m
-GHAT_DEFAULT_DISTANCE = 900
-GHAT_STATION_DISTANCES = {"KAD": 800, "NNCN": 800}  # T5 stations
+# Offsets for violations analysis (includes ghat-specific distance)
+VIOLATIONS_OFFSETS = BRAKE_OFFSETS + [800]
+# Ghat sections are assessed at 800m before the halt (40 km/h limit),
+# same distance for all ghat stations, in every report.
+GHAT_DISTANCE = 800
+# If the nearest GPS sample is farther than this from a requested offset
+# (RTIS logging gap), interpolate between the bracketing samples instead of
+# reporting the speed of a point hundreds of metres away as the offset speed.
+OFFSET_GAP_INTERPOLATION_M = 25.0
 BRAKE_EVENT_TOLERANCE = 0.3
 BRAKE_REQUIRED_DROP = 45.0
 BRAKE_CHART_STEPS = sorted(set(BRAKE_OFFSETS + [0]), reverse=True)
@@ -744,6 +748,8 @@ async def load_csv(
             infer_schema_length=2000,
             null_values=["NULL", "Null", "null"],
             dtypes={
+                "Speed": pl.Float64,
+                "speed": pl.Float64,
                 "distFromSpeed": pl.Utf8,
                 "distFromPrevLatLng": pl.Utf8,
                 "BE Version": pl.Utf8,
@@ -1755,8 +1761,12 @@ def _detect_halt_markers_from_enriched(enriched_df: pl.DataFrame, original_colum
         prev_speed = speeds[idx - 1]
         current_speed = speeds[idx]
 
-        # Halt detected (speed drops to <=0.5)
-        if current_speed <= 0.5 and prev_speed > 0.5:
+        # Initial trigger: speed drops below threshold
+        if current_speed <= HALT_TRIGGER_SPEED and prev_speed > HALT_TRIGGER_SPEED:
+            # Confirmation: speed must stay low for at least 10 consecutive seconds
+            if not _is_confirmed_halt(speeds, idx):
+                continue
+
             halt_distance = cumulative[idx]
             halt_station = stations[idx]
             display_station = str(halt_station).strip() if halt_station and halt_station != "None" else None
@@ -1777,7 +1787,7 @@ def _detect_halt_markers_from_enriched(enriched_df: pl.DataFrame, original_colum
                 })
                 last_halt_distance = halt_distance
 
-    print(f"[DEBUG HALT] Found {len(halts_before_filter)} raw halts: {[(h['distance'], h['station']) for h in halts_before_filter[:10]]}")
+    print(f"[DEBUG HALT] Found {len(halts_before_filter)} confirmed halts: {[(h['distance'], h['station']) for h in halts_before_filter[:10]]}")
     print(f"[DEBUG HALT] After 500m filter + station check: {len(halts)} halts")
 
     return halts
@@ -1926,10 +1936,9 @@ def braking_profile(request: Request, criteria: dict = Body(...), run_id: str | 
     filtered = apply_criteria(df, criteria)
     analysis_offsets = list(BRAKE_OFFSETS)
     extras: list[int] = []
-    if 500 not in analysis_offsets:
-        extras.append(500)
-    if 250 not in analysis_offsets:
-        extras.append(250)
+    for extra in (500, 250, GHAT_DISTANCE):
+        if extra not in analysis_offsets:
+            extras.append(extra)
     if extras:
         analysis_offsets = sorted(set(analysis_offsets + extras), reverse=True)
     halts = _braking_profile(filtered, analysis_offsets)
@@ -1938,16 +1947,6 @@ def braking_profile(request: Request, criteria: dict = Body(...), run_id: str | 
         start_station=criteria.get("from_station_equals"),
         end_station=criteria.get("to_station_equals"),
     )
-    extras_to_strip: list[str] = []
-    if 500 not in BRAKE_OFFSETS:
-        extras_to_strip.append("500")
-    if 250 not in BRAKE_OFFSETS:
-        extras_to_strip.append("250")
-    if extras_to_strip:
-        for entry in halts:
-            entry_speeds = entry.get("speeds", {})
-            for key in extras_to_strip:
-                entry_speeds.pop(key, None)
 
     # Compute zone-based 1000m threshold for each halt (sync with PDF export logic)
     from_station = (criteria.get("from_station_equals") or "").strip().upper()
@@ -1964,6 +1963,12 @@ def braking_profile(request: Request, criteria: dict = Body(...), run_id: str | 
     train_number = (criteria.get("train_number") or "").strip()
     for idx, halt in enumerate(halts):
         in_ghat = idx in ghat_halt_indices
+        if in_ghat:
+            # Ghat halts are assessed at 800m — surface that reading in the
+            # 1000m column so the UI matches the daily violations report
+            ghat_reading = halt.get("speeds", {}).get(str(GHAT_DISTANCE))
+            if ghat_reading and isinstance(ghat_reading.get("speed"), (int, float)):
+                halt["speeds"]["1000"] = {**ghat_reading, "measured_at_m": GHAT_DISTANCE}
         halt["threshold_1000m"] = _get_1000m_threshold(
             idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
         )
@@ -1971,6 +1976,13 @@ def braking_profile(request: Request, criteria: dict = Body(...), run_id: str | 
             idx, boundary_halt_idx, from_station, direction, train_number
         )
         halt["in_ghat_section"] = in_ghat  # Include for UI debugging/display
+
+    extras_to_strip = [str(extra) for extra in extras]
+    if extras_to_strip:
+        for entry in halts:
+            entry_speeds = entry.get("speeds", {})
+            for key in extras_to_strip:
+                entry_speeds.pop(key, None)
 
     return {
         "offsets": BRAKE_OFFSETS,
@@ -2550,9 +2562,17 @@ def _render_pdf_report(
             row = [station_name]
             for col_idx, offset in enumerate(BRAKE_OFFSETS, start=1):  # start=1 because col 0 is halt name
                 reading = (halt.get("speeds") or {}).get(str(offset))
+                ghat_cell = False
+                if offset == 1000 and in_ghat:
+                    # Ghat halts are assessed at 800m — show the same reading
+                    # the daily violations report uses (marked with *)
+                    ghat_reading = (halt.get("speeds") or {}).get(str(GHAT_DISTANCE))
+                    if ghat_reading and isinstance(ghat_reading.get("speed"), (int, float)):
+                        reading = ghat_reading
+                        ghat_cell = True
                 if reading and isinstance(reading.get("speed"), (int, float)):
                     speed = reading['speed']
-                    row.append(f"{speed:.1f}")
+                    row.append(f"{speed:.1f}*" if ghat_cell else f"{speed:.1f}")
 
                     # Apply conditional formatting rules
                     if offset == 100:
@@ -2566,12 +2586,17 @@ def _render_pdf_report(
                         elif speed >= 10:
                             yellow_warning_cells.append((col_idx, row_idx))  # Yellow background
                     elif offset == 1000:
-                        # Zone-based threshold: 70 for suburban, 60/90 for mainline, 40 for ghat section
-                        threshold_1000m = _get_1000m_threshold(
-                            halt_list_idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
-                        )
-                        if speed >= threshold_1000m + 1:
-                            warn_text_cells.append((col_idx, row_idx))
+                        if ghat_cell:
+                            # Same rule as _detect_violations: 40 km/h limit at 800m
+                            if speed >= 40.0 + 1:
+                                warn_text_cells.append((col_idx, row_idx))
+                        else:
+                            # Zone-based threshold: 70 for suburban, 60/90 for mainline
+                            threshold_1000m = _get_1000m_threshold(
+                                halt_list_idx, boundary_halt_idx, from_station, to_station, direction, train_number, in_ghat
+                            )
+                            if speed >= threshold_1000m + 1:
+                                warn_text_cells.append((col_idx, row_idx))
                     elif offset == 300:
                         # 400m threshold only applies in Zone A (suburban) - uses 300m speed data
                         threshold_400m = _get_400m_threshold(
@@ -2622,7 +2647,7 @@ def _render_pdf_report(
             footnote_style.fontSize = 8
             footnote_style.textColor = colors.Color(0.4, 0.4, 0.4)
             footnote_style.fontName = "Helvetica-Oblique"
-            story.append(Paragraph("▲ Ghat section (steep gradient descent) — 40 km/h limit at 1000m", footnote_style))
+            story.append(Paragraph("▲ Ghat section (steep gradient descent) — 40 km/h limit; * speed measured at 800 m before halt", footnote_style))
 
         story.append(Spacer(1, 16))
 
@@ -2745,7 +2770,8 @@ def export_pdf(request: Request, criteria: dict = Body(...), run_id: str | None 
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     # Use unified function for both table and chart (same filtering)
-    unified_data = _braking_profile_full_curve(filtered, BRAKE_OFFSETS)
+    # VIOLATIONS_OFFSETS adds the 800m ghat reading used in the table
+    unified_data = _braking_profile_full_curve(filtered, VIOLATIONS_OFFSETS)
 
     brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
     summary = _build_summary_details(filtered, criteria)
@@ -3894,7 +3920,7 @@ async def export_violations_pdf(
         section_info = {
             "1000m_zone_b": ("Speed Violations at 1000m (Zone B - Mainline)", "60/90 km/h threshold"),
             "400m_zone_a": ("Speed Violations at 400m (Zone A - Suburban)", "30/40 km/h threshold"),
-            "ghat": ("Ghat Section Violations (Steep Gradient)", "40 km/h threshold"),
+            "ghat": ("Ghat Section Violations (Steep Gradient)", "40 km/h threshold at 800m"),
         }
 
         headers = ["SR", "DATE", "TR NO", "LOCO", "LP NAME", "NCLI", "ALP NAME", "NCLI-ALP", "SPEED", "HALT"]
@@ -5343,7 +5369,7 @@ ROUTE_BOUNDARY_MAP = {
 }
 
 # Ghat sections - steep gradient descent in UP direction
-# Format: (start_station, end_station) - halts between these get 40 km/h at 1000m
+# Format: (start_station, end_station) - halts between these get 40 km/h at 800m
 GHAT_SECTIONS = [
     ("IGP", "KSRA"),  # Bhor Ghat section on IGP-Mumbai route
     ("LNL", "PDI"),   # Bhor Ghat section on Pune-Mumbai route
@@ -5433,7 +5459,7 @@ def _detect_violations(
     - '1000m_zone_b': Zone B (mainline) violations at 1000m (>60 or >90 for 222xx)
     - '400m_zone_a': Zone A (suburban) violations at 400m (>30 or >40 for 222xx)
     - 'ghat': Ghat section violations (>40, UP direction only)
-             Distance: 900m default, 800m for KAD and NNCN (T5 stations)
+             Distance: 800m for all ghat stations
     """
     if not halts:
         return []
@@ -5483,10 +5509,8 @@ def _detect_violations(
 
         # Check ghat violation first (takes precedence, only UP direction)
         if in_ghat:
-            # Get ghat distance for this station: 800m for KAD/NNCN, 900m for others
-            station_code = (halt.get("station") or "").strip().upper()
-            ghat_distance = GHAT_STATION_DISTANCES.get(station_code, GHAT_DEFAULT_DISTANCE)
-            reading_ghat = speeds.get(str(ghat_distance))
+            # Ghat halts are assessed at 800m before the halt (all stations)
+            reading_ghat = speeds.get(str(GHAT_DISTANCE))
             if reading_ghat and isinstance(reading_ghat.get("speed"), (int, float)):
                 speed_ghat = reading_ghat["speed"]
                 if speed_ghat >= ghat_threshold + 1:
@@ -5497,7 +5521,7 @@ def _detect_violations(
                         "halt_station": halt_station,
                         "zone": "ghat",
                         "halt_time": halt.get("logging_time"),
-                        "distance": ghat_distance,  # Include distance for reference
+                        "distance": GHAT_DISTANCE,  # Include distance for reference
                     })
 
         # Check 1000m speed for Zone B (only if not in ghat)
@@ -5684,6 +5708,85 @@ def _get_400m_threshold(
         return None if halt_idx <= boundary_idx else zone_a_threshold
 
 
+# ---------------------------------------------------------------------------
+# Halt Detection Constants
+# ---------------------------------------------------------------------------
+HALT_TRIGGER_SPEED = 0.5      # Initial trigger: speed drops to this
+HALT_CONFIRM_SPEED = 0.3      # Confirmation: speed must stay below this
+HALT_MIN_DURATION_SEC = 10    # Minimum consecutive seconds at low speed
+
+
+def _is_confirmed_halt(speeds: list[float], start_idx: int, min_duration: int = HALT_MIN_DURATION_SEC) -> bool:
+    """
+    Check if a potential halt at start_idx is a genuine halt.
+
+    A halt is confirmed if speed stays <= HALT_CONFIRM_SPEED (0.3 km/h)
+    for at least min_duration consecutive seconds after the trigger point.
+
+    This filters out brief slowdowns and GPS noise that might cause
+    speed to momentarily drop below 0.5 km/h.
+    """
+    n = len(speeds)
+    consecutive_low = 0
+
+    for i in range(start_idx, min(start_idx + min_duration + 5, n)):
+        speed = speeds[i] if speeds[i] is not None else 0.0
+        if speed <= HALT_CONFIRM_SPEED:
+            consecutive_low += 1
+            if consecutive_low >= min_duration:
+                return True
+        else:
+            # Speed went above threshold, reset counter
+            consecutive_low = 0
+
+    return False
+
+
+def _offset_reading(
+    target: float,
+    halt_idx: int,
+    dist_to_halt: list[float],
+    speeds: list[float],
+    times: list[Any],
+    stations: list[str | None],
+) -> dict[str, Any]:
+    """
+    Speed reading at `target` metres before the halt.
+
+    Picks the farthest sample within the target distance. If that sample is
+    more than OFFSET_GAP_INTERPOLATION_M short of the target (RTIS logging
+    gap), the speed is linearly interpolated between the bracketing samples
+    so the reading actually corresponds to the requested distance.
+    """
+    chosen_idx = halt_idx
+    probe = halt_idx
+    while probe >= 0 and dist_to_halt[probe] <= target:
+        chosen_idx = probe
+        probe -= 1
+    if chosen_idx < 0:
+        chosen_idx = 0
+    diff = abs(target - dist_to_halt[chosen_idx])
+    reading = {
+        "speed": speeds[chosen_idx],
+        "time": times[chosen_idx],
+        "station": stations[chosen_idx],
+        "delta_m": diff,
+    }
+    outer_idx = chosen_idx - 1
+    if diff > OFFSET_GAP_INTERPOLATION_M and outer_idx >= 0 and dist_to_halt[outer_idx] > target:
+        d_inner = dist_to_halt[chosen_idx]
+        d_outer = dist_to_halt[outer_idx]
+        span = d_outer - d_inner
+        if span > 0:
+            frac = (target - d_inner) / span
+            estimated = speeds[chosen_idx] + frac * (speeds[outer_idx] - speeds[chosen_idx])
+            reading["speed"] = round(estimated, 2)
+            reading["delta_m"] = 0.0
+            reading["interpolated"] = True
+            reading["gap_m"] = round(span, 1)
+    return reading
+
+
 def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
     if df.is_empty():
         return []
@@ -5728,7 +5831,11 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
     for idx in range(first_move_idx + 1, len(speeds)):
         prev_speed = speeds[idx - 1]
         current_speed = speeds[idx]
-        if current_speed <= 0.5 and prev_speed > 0.5:
+        # Initial trigger: speed drops below threshold
+        if current_speed <= HALT_TRIGGER_SPEED and prev_speed > HALT_TRIGGER_SPEED:
+            # Confirmation: speed must stay low for at least 10 consecutive seconds
+            if not _is_confirmed_halt(speeds, idx):
+                continue
             halt_distance = cumulative[idx]
             if last_halt_distance is not None and (halt_distance - last_halt_distance) < 200.0:
                 continue
@@ -5763,21 +5870,9 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
             "sharp_brake": sharp_brake,
         }
         for offset in offsets:
-            target = float(offset)
-            chosen_idx = halt_idx
-            probe = halt_idx
-            while probe >= 0 and dist_to_halt[probe] <= target:
-                chosen_idx = probe
-                probe -= 1
-            if chosen_idx < 0:
-                chosen_idx = 0
-            diff = abs(target - dist_to_halt[chosen_idx])
-            halt_entry["speeds"][str(offset)] = {
-                "speed": speeds[chosen_idx],
-                "time": times[chosen_idx],
-                "station": stations[chosen_idx],
-                "delta_m": diff,
-            }
+            halt_entry["speeds"][str(offset)] = _offset_reading(
+                float(offset), halt_idx, dist_to_halt, speeds, times, stations
+            )
         results.append(halt_entry)
 
     return results
@@ -5971,13 +6066,17 @@ def _braking_profile_full_curve(df: pl.DataFrame, offsets: list[int]) -> list[di
     if first_move_idx is None:
         return []
 
-    # Find all halts with 200m spacing
+    # Find all halts with 200m spacing and 10-second confirmation
     halts: list[int] = []
     last_halt_distance: float | None = None
     for idx in range(first_move_idx + 1, len(speeds)):
         prev_speed = speeds[idx - 1]
         current_speed = speeds[idx]
-        if current_speed <= 0.5 and prev_speed > 0.5:
+        # Initial trigger: speed drops below threshold
+        if current_speed <= HALT_TRIGGER_SPEED and prev_speed > HALT_TRIGGER_SPEED:
+            # Confirmation: speed must stay low for at least 10 consecutive seconds
+            if not _is_confirmed_halt(speeds, idx):
+                continue
             halt_distance = cumulative[idx]
             if last_halt_distance is not None and (halt_distance - last_halt_distance) < 200.0:
                 continue
@@ -6007,21 +6106,9 @@ def _braking_profile_full_curve(df: pl.DataFrame, offsets: list[int]) -> list[di
         # Extract discrete offsets for table
         speeds_dict = {}
         for offset in offsets:
-            target = float(offset)
-            chosen_idx = halt_idx
-            probe = halt_idx
-            while probe >= 0 and dist_to_halt[probe] <= target:
-                chosen_idx = probe
-                probe -= 1
-            if chosen_idx < 0:
-                chosen_idx = 0
-            diff = abs(target - dist_to_halt[chosen_idx])
-            speeds_dict[str(offset)] = {
-                "speed": speeds[chosen_idx],
-                "time": times[chosen_idx],
-                "station": stations[chosen_idx],
-                "delta_m": diff,
-            }
+            speeds_dict[str(offset)] = _offset_reading(
+                float(offset), halt_idx, dist_to_halt, speeds, times, stations
+            )
 
         # Extract ALL points within 1000m for smooth curve
         curve_distances: list[float] = []
@@ -7098,7 +7185,8 @@ async def save_lp_report(
 
         # Build chart payload and summary
         chart_payload = _build_chart_payload(filtered, criteria)
-        unified_data = _braking_profile_full_curve(filtered, BRAKE_OFFSETS)
+        # VIOLATIONS_OFFSETS adds the 800m ghat reading used in the table
+        unified_data = _braking_profile_full_curve(filtered, VIOLATIONS_OFFSETS)
         brake_tests = _brake_tests(filtered, criteria.get("from_station_equals"), criteria.get("direction_equals"))
         summary = _build_summary_details(filtered, criteria)
 
@@ -7744,7 +7832,7 @@ def _detect_nominated_halt_at_row(lat: float, lon: float, speed: float, directio
                 print(f"  -> {g['station_code']} at ({g['latitude']}, {g['longitude']}) r={g.get('radius_m', 120)}m dir={g['direction']}")
         _BRAKING_GEOFENCE_DEBUG_DONE = True
 
-    if speed > 0.5:
+    if speed > HALT_TRIGGER_SPEED:
         return None
     for halt in nominated_halts:
         if halt["direction"] not in (direction, "BOTH"):
@@ -7875,10 +7963,14 @@ def _save_braking_run_data(conn, analysis_id: int, criteria: dict, df: pl.DataFr
     MIN_DISTANCE_SAME_HALT = 500.0  # Minimum 500m between same halt detections
 
     for idx in range(len(speeds)):
-        if speeds[idx] <= 0.5:
+        if speeds[idx] <= HALT_TRIGGER_SPEED:
             halt_candidates += 1
         halt_info = _detect_nominated_halt_at_row(lats[idx], lons[idx], speeds[idx], direction, nominated_halts)
         if halt_info:
+            # Confirmation: speed must stay low for at least 10 consecutive seconds
+            if not _is_confirmed_halt(speeds, idx):
+                continue
+
             halt_code = halt_info["halt_code"]
             # Check if we've detected this halt before and if we're far enough from last detection
             if halt_code in last_halt_positions:
@@ -7892,7 +7984,7 @@ def _save_braking_run_data(conn, analysis_id: int, criteria: dict, df: pl.DataFr
             detected_halts.append({"idx": idx, "halt_info": halt_info})
             last_halt_positions[halt_code] = (lats[idx], lons[idx])
 
-    print(f"\[####BRAKING####] Found {halt_candidates} rows with speed<=0.5, detected {len(detected_halts)} nominated halts")
+    print(f"[####BRAKING####] Found {halt_candidates} rows with speed<={HALT_TRIGGER_SPEED}, detected {len(detected_halts)} confirmed halts (10s duration)")
 
     if not detected_halts:
         print("\[####BRAKING####] No nominated halts detected - exiting")
