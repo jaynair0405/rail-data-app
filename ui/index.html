@@ -1217,8 +1217,7 @@ function renderBrakingTable(halts) {
     const cells = BRAKE_OFFSETS.map(offset => {
       const key = String(offset);
       const reading = halt.speeds && halt.speeds[key];
-      const ghatStar = reading && reading.measured_at_m ? "*" : "";
-      const val = reading && typeof reading.speed === "number" ? reading.speed.toFixed(1) + ghatStar : "—";
+      const val = reading && typeof reading.speed === "number" ? reading.speed.toFixed(1) : "—";
       let warnClass = "";
       const numeric = reading && typeof reading.speed === "number" ? reading.speed : null;
       if (numeric !== null) {
@@ -1255,7 +1254,7 @@ function renderBrakingTable(halts) {
   if (footnote) {
     const hasGhatSection = halts.some(h => h.in_ghat_section);
     if (hasGhatSection) {
-      footnote.textContent = "▲ Ghat section (steep gradient descent) — 40 km/h limit; * speed measured at 800 m before halt";
+      footnote.textContent = "▲ Ghat section (steep gradient descent) — 40 km/h limit";
       footnote.style.display = "block";
     } else {
       footnote.style.display = "none";

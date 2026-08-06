@@ -2572,7 +2572,7 @@ def _render_pdf_report(
                         ghat_cell = True
                 if reading and isinstance(reading.get("speed"), (int, float)):
                     speed = reading['speed']
-                    row.append(f"{speed:.1f}*" if ghat_cell else f"{speed:.1f}")
+                    row.append(f"{speed:.1f}")
 
                     # Apply conditional formatting rules
                     if offset == 100:
@@ -2647,7 +2647,7 @@ def _render_pdf_report(
             footnote_style.fontSize = 8
             footnote_style.textColor = colors.Color(0.4, 0.4, 0.4)
             footnote_style.fontName = "Helvetica-Oblique"
-            story.append(Paragraph("▲ Ghat section (steep gradient descent) — 40 km/h limit; * speed measured at 800 m before halt", footnote_style))
+            story.append(Paragraph("▲ Ghat section (steep gradient descent) — 40 km/h limit", footnote_style))
 
         story.append(Spacer(1, 16))
 
@@ -3920,7 +3920,7 @@ async def export_violations_pdf(
         section_info = {
             "1000m_zone_b": ("Speed Violations at 1000m (Zone B - Mainline)", "60/90 km/h threshold"),
             "400m_zone_a": ("Speed Violations at 400m (Zone A - Suburban)", "30/40 km/h threshold"),
-            "ghat": ("Ghat Section Violations (Steep Gradient)", "40 km/h threshold at 800m"),
+            "ghat": ("Ghat Section Violations (Steep Gradient)", "40 km/h threshold"),
         }
 
         headers = ["SR", "DATE", "TR NO", "LOCO", "LP NAME", "NCLI", "ALP NAME", "NCLI-ALP", "SPEED", "HALT"]
