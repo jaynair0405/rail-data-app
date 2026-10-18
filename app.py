@@ -9,7 +9,7 @@ import polars as pl
 import pandas as pd
 import io, time, re, math, sys, threading, uuid
 from typing import Dict, Any, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import numpy as np
 import os
@@ -2005,7 +2005,7 @@ def _annotate_signal_matches(
     direction: str | None,
     train_number: str | None,
 ) -> list[dict[str, Any]]:
-    """Classify halts as scheduled station, signal, or CSV-code fallback."""
+    """Classify station halts without signal matching (signal map is deferred)."""
     scheduled_codes = _load_scheduled_halt_codes(train_number, direction)
     annotated = []
     for halt in halt_markers:
@@ -2017,29 +2017,20 @@ def _annotate_signal_matches(
             if scheduled_station
             else None
         )
-        # RTIS often continues reporting the last/current station code while
-        # the train is still approaching it. Only give the WTT station
-        # precedence when the halt point is actually inside that station's
-        # geofence. Outside the fence, a nearby signal is the better label.
+        # Keep scheduled station/geofence recognition and CSV fallback. Signal
+        # matching is intentionally omitted while its mapping is under review.
         if scheduled_station and inside_station_fence is not False:
             item["match_source"] = "STATION"
         else:
-            signal = _match_signal_for_halt(item, direction)
-            if signal:
-                item["signal"] = signal
-                item["match_source"] = "SIGNAL"
-            elif station_code:
+            if station_code:
                 item["match_source"] = "FALLBACK_STATION"
             else:
                 item["match_source"] = "UNKNOWN"
-        signal = item.get("signal") or {}
         print(
             "[HALT MATCH] "
             f"time={item.get('timestamp')} station={station_code or '—'} "
             f"source={item.get('match_source')} "
-            f"station_distance_m={item.get('station_distance_m')} "
-            f"signal={signal.get('signal_number') or signal.get('signal_id') or '—'} "
-            f"signal_distance_m={signal.get('distance_m', '—')}"
+            f"station_distance_m={item.get('station_distance_m')}"
         )
         annotated.append(item)
     return annotated
@@ -2179,7 +2170,6 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
             lon_expr.alias("_LON_FLOAT"),
         )
         .drop_nulls(["_TS"])
-        .with_columns(pl.col("_TS").dt.truncate("1m").alias("_MIN"))
     )
 
     coach_type = criteria.get("coach_type")
@@ -2192,6 +2182,8 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
 
     # Confirmed stops and route references remain separate before aggregation.
     halt_markers = _detect_halt_markers_from_enriched(enriched, dataset.columns)
+    # Signal mapping is still under investigation; retain station/fallback
+    # classification without consulting the signal reference table.
     halt_markers = _annotate_signal_matches(
         halt_markers,
         direction,
@@ -2200,37 +2192,24 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
     route_markers = _route_reference_markers(enriched, dataset.columns, criteria, halt_markers)
     print(f"[DEBUG] Detected {len(halt_markers)} halt markers with stations: {[h['station'] for h in halt_markers]}")
 
-    df2 = (
-        enriched.group_by("_MIN")
-        .agg([
-            pl.col("_SPD").mean().alias("_AVG"),
-            pl.col("_SPD").last().alias("_LAST"),
-            pl.col("_SPD").first().alias("_FIRST_SPEED"),
-            pl.col("_LIMIT").min().alias("_LIMIT_MIN"),
-            pl.col("_MPS_LIMIT").min().alias("_MPS"),
-            pl.col("_TS").first().alias("_FIRST_TS"),
-        ])
-        .sort("_MIN")
-    )
-    labels = df2["_MIN"].dt.strftime("%Y-%m-%d %H:%M").to_list()
+    # Plot every valid RTIS row. Minute aggregation can erase short PSR entry
+    # and exit transitions and pair a speed with a limit from another sample.
+    enriched = enriched.sort("_TS")
+    chart_timestamps = enriched["_TS"].to_list()
+    labels = [_stringify_time(value) for value in chart_timestamps]
     values = [float(x) if x is not None and math.isfinite(float(x)) else None
-              for x in df2["_LAST"].to_list()]
-    # The first chart point represents the actual crew-start reading, rather
-    # than the end of its minute (which may already show an accelerating train).
-    # Missing source speed stays missing; never insert a zero for appearance.
-    if values:
-        first_speed = df2["_FIRST_SPEED"][0]
-        values[0] = float(first_speed) if first_speed is not None and math.isfinite(float(first_speed)) else None
-    limit_values = [float(x) if x is not None else None for x in df2["_LIMIT_MIN"].to_list()]
-    mps_values_raw = [float(x) if x is not None else None for x in df2["_MPS"].to_list()]
+              for x in enriched["_SPD"].to_list()]
+    limit_values = [float(x) if x is not None else None for x in enriched["_LIMIT"].to_list()]
+    mps_values_raw = [float(x) if x is not None else None for x in enriched["_MPS_LIMIT"].to_list()]
     mps_values = _forward_fill(mps_values_raw)
 
     segments = _build_restriction_segments(labels, limit_values)
 
-    # Map halts to chart labels (minute-aggregated)
-    chart_timestamps = df2["_FIRST_TS"].to_list()
+    chart_time_seconds, compact_time_seconds, compact_breaks = _chart_time_coordinates(
+        enriched, chart_timestamps, _confirmed_halt_events(enriched)
+    )
     station_labels = _map_halts_to_chart(halt_markers, chart_timestamps)
-    signal_labels = _map_signal_labels_to_chart(halt_markers, chart_timestamps)
+    signal_labels = [None] * len(chart_timestamps)
     reference_labels = _map_halts_to_chart(
         [{"station": marker["label"], "timestamp": marker["timestamp"]}
          for marker in route_markers], chart_timestamps,
@@ -2239,6 +2218,10 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
 
     return {
         "labels": labels,
+        "point_timestamps": [_stringify_time(value) for value in chart_timestamps],
+        "time_seconds": chart_time_seconds,
+        "compact_time_seconds": compact_time_seconds,
+        "compact_breaks": compact_breaks,
         "values": values,
         "start_sample": {"timestamp": _stringify_time(enriched["_TS"][0]),
                          "speed": values[0]} if values else None,
@@ -2261,6 +2244,124 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
             for h in halt_markers
         ],
     }
+
+
+def _chart_time_coordinates(
+    enriched: pl.DataFrame,
+    chart_timestamps: list[Any],
+    halt_events: list[dict[str, Any]],
+    preserve_seconds: int = 180,
+    compressed_extra_seconds: int = 1,
+) -> tuple[list[float], list[float], list[dict[str, Any]]]:
+    """Build actual and compact display times without changing RTIS samples.
+
+    Only contiguous, observed low-speed portions of confirmed halts are eligible.
+    The first three minutes remain at full scale; any remaining portion is shown
+    in at most one second. Gaps and crawling above 3 km/h remain visible.
+    """
+    if not chart_timestamps:
+        return [], [], []
+    first_time = chart_timestamps[0]
+    times = enriched["_TS"].to_list()
+    speeds = enriched["_SPD"].to_list()
+
+    def elapsed(a: Any, b: Any) -> float | None:
+        if a is None or b is None:
+            return None
+        try:
+            return (b - a).total_seconds()
+        except (TypeError, AttributeError):
+            return None
+
+    raw_breaks: list[tuple[Any, Any]] = []
+    for event in halt_events:
+        start_idx = event["index"]
+        moving_start = None
+        moving_candidate = None
+        previous_moving_idx = None
+        for i in range(max(start_idx + 1, event["confirmed_index"] + 1), len(times)):
+            dt = elapsed(times[i - 1], times[i])
+            speed = speeds[i]
+            if dt is None or not 0 < dt <= 3 or speed is None or speed < 5:
+                moving_candidate = None
+                previous_moving_idx = None
+                continue
+            if moving_candidate is None:
+                moving_candidate = i
+            if previous_moving_idx is not None and elapsed(times[previous_moving_idx], times[i]) is not None:
+                if elapsed(times[previous_moving_idx], times[i]) > 3:
+                    moving_candidate = i
+            previous_moving_idx = i
+            if elapsed(times[moving_candidate], times[i]) >= 10:
+                moving_start = moving_candidate
+                break
+        end_idx = moving_start if moving_start is not None else len(times) - 1
+
+        # Split at missing/long intervals and at speeds above the stop detector's
+        # low-speed envelope. Never compress unobserved time or crawl time.
+        run_start = None
+        run_end = None
+        for i in range(start_idx, end_idx + 1):
+            speed = speeds[i]
+            connected = i == start_idx or (
+                elapsed(times[i - 1], times[i]) is not None
+                and 0 < elapsed(times[i - 1], times[i]) <= 3
+            )
+            stationary = speed is not None and speed <= 3
+            if not connected or not stationary:
+                if run_start is not None and run_end is not None:
+                    raw_breaks.append((times[run_start], times[run_end]))
+                run_start = run_end = None
+            if stationary:
+                if run_start is None:
+                    run_start = i
+                run_end = i
+        if run_start is not None and run_end is not None:
+            raw_breaks.append((times[run_start], times[run_end]))
+
+    breaks = []
+    for start, end in raw_breaks:
+        duration = elapsed(start, end)
+        if duration is None or duration <= preserve_seconds + compressed_extra_seconds:
+            continue
+        compress_start = start + timedelta(seconds=preserve_seconds)
+        compress_end = end
+        actual_extra = elapsed(compress_start, compress_end)
+        if actual_extra is None or actual_extra <= compressed_extra_seconds:
+            continue
+        removed = actual_extra - compressed_extra_seconds
+        breaks.append({
+            "start_seconds": elapsed(first_time, compress_start),
+            "end_seconds": elapsed(first_time, compress_end),
+            "actual_extra_seconds": actual_extra,
+            "removed_seconds": removed,
+        })
+    breaks.sort(key=lambda item: item["start_seconds"])
+
+    actual = [elapsed(first_time, value) or 0.0 for value in chart_timestamps]
+    compact = []
+    for value in chart_timestamps:
+        coordinate = elapsed(first_time, value) or 0.0
+        removed_before = 0.0
+        for item in breaks:
+            if coordinate >= item["end_seconds"]:
+                removed_before += item["removed_seconds"]
+            elif coordinate > item["start_seconds"]:
+                fraction = (coordinate - item["start_seconds"]) / (
+                    item["end_seconds"] - item["start_seconds"]
+                )
+                removed_before += fraction * item["removed_seconds"]
+        compact.append(coordinate - removed_before)
+    for item in breaks:
+        prior_removed = sum(
+            prior["removed_seconds"] for prior in breaks
+            if prior["end_seconds"] <= item["start_seconds"]
+        )
+        item["compact_start_seconds"] = item["start_seconds"] - prior_removed
+        item["compact_end_seconds"] = (
+            item["end_seconds"] - prior_removed - item["removed_seconds"]
+        )
+    return actual, compact, breaks
 
 
 @app.post("/chart_data")
@@ -5468,15 +5569,24 @@ def _matching_restrictions(route_key: str | None, direction: str | None) -> list
 
 
 def _find_point_index(lat_vals: list[float | None], lon_vals: list[float | None], target_lat: float, target_lon: float, start: int = 0) -> int | None:
+    """Find the closest observed GPS sample to a PSR endpoint.
+
+    Returning the first sample inside the 120 m tolerance can start a PSR well
+    before its surveyed coordinate. Keep the tolerance as a validity bound, but
+    choose the closest sample within that bound.
+    """
+    best_idx = None
+    best_dist = RESTRICTION_POINT_TOLERANCE_M
     for idx in range(start, len(lat_vals)):
         lat = lat_vals[idx]
         lon = lon_vals[idx]
         if lat is None or lon is None:
             continue
         dist = _haversine_m(lat, lon, target_lat, target_lon)
-        if dist <= RESTRICTION_POINT_TOLERANCE_M:
-            return idx
-    return None
+        if dist <= RESTRICTION_POINT_TOLERANCE_M and (best_idx is None or dist < best_dist):
+            best_idx = idx
+            best_dist = dist
+    return best_idx
 
 
 def _find_station_point_index(lat_vals: list[float | None], lon_vals: list[float | None], target_lat: float, target_lon: float, start: int = 0) -> int | None:

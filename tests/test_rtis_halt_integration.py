@@ -75,6 +75,55 @@ class AppHaltIntegrationTests(unittest.TestCase):
         self.assertIn('TGR3', labels)
         self.assertIn('CSMT', labels)
 
+    def test_psr_endpoint_uses_nearest_sample_not_first_sample_in_tolerance(self):
+        target_lat, target_lon = 19.7, 73.5
+        # The first point is about 55 m away; the next is the actual closest pass.
+        found = self.app._find_point_index(
+            [target_lat + 0.0005, target_lat],
+            [target_lon, target_lon],
+            target_lat,
+            target_lon,
+        )
+        self.assertEqual(found, 1)
+
+    def test_chart_keeps_each_raw_speed_and_psr_sample_at_boundary(self):
+        app = self.app
+        previous = {
+            'restrictions': app.SPEED_RESTRICTIONS,
+            'halts': app._detect_halt_markers_from_enriched,
+            'signals': app._annotate_signal_matches,
+            'mps': app._section_limits_for_rows,
+        }
+        app.SPEED_RESTRICTIONS = [{
+            'route': 'IGP-CSMT', 'direction': 'UP', 'speed_limit': 30,
+            'from_lat': 19.7, 'from_lon': 73.5,
+            'to_lat': 19.7, 'to_lon': 73.51,
+        }]
+        app._detect_halt_markers_from_enriched = lambda *args, **kwargs: []
+        app._annotate_signal_matches = lambda halts, *args, **kwargs: halts
+        app._section_limits_for_rows = lambda rows, *args, **kwargs: [100.0] * rows.height
+        try:
+            frame = app.pl.DataFrame({
+                'Logging Time': ['2026-01-01 00:00:00', '2026-01-01 00:00:59',
+                                 '2026-01-01 00:01:00', '2026-01-01 00:01:05'],
+                'Speed': [25.0, 29.0, 29.0, 50.0],
+                'Latitude': [19.7, 19.7, 19.7, 19.7],
+                'Longitude': [73.5, 73.505, 73.51, 73.511],
+            })
+            with contextlib.redirect_stdout(io.StringIO()):
+                payload = app._build_chart_payload(frame, {
+                    'from_station_equals': 'IGP', 'to_station_equals': 'CSMT',
+                    'direction_equals': 'UP', 'train_number': '12138',
+                })
+            self.assertEqual(payload['values'], [25.0, 29.0, 29.0, 50.0])
+            self.assertEqual(payload['limit_values'], [30.0, 30.0, 30.0, None])
+            self.assertEqual(len(payload['point_timestamps']), 4)
+        finally:
+            app.SPEED_RESTRICTIONS = previous['restrictions']
+            app._detect_halt_markers_from_enriched = previous['halts']
+            app._annotate_signal_matches = previous['signals']
+            app._section_limits_for_rows = previous['mps']
+
     def test_existing_readings_are_preserved(self):
         expected = {'LS': [50.3, 25.3, 16.8, 12.4, 9.8, 6.1],
                     'DVL': [56.8, 29.2, 22.9, 17.1, 13.8, 8.0]}

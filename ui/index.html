@@ -495,6 +495,11 @@
 
   <section class="card">
     <h3>Performance Chart</h3>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 2px">
+      <button id="fullTimeChart" type="button" style="padding:7px 12px;background:#2563a6">Full time</button>
+      <button id="compactTimeChart" type="button" class="secondary" style="padding:7px 12px">Compact halts &gt;3 min</button>
+      <small id="chartTimeNote" style="color:#64748b">Full recorded time; no halt compression.</small>
+    </div>
     <div id="chart"></div>
   </section>
 
@@ -1657,15 +1662,29 @@ document.getElementById("btnUpload").onclick = async () => {
   }
 };
 
+let compactHaltView = false;
+let lastChartCriteria = null;
+
 async function drawChart(criteria){
+  lastChartCriteria = criteria;
   const r = await fetch(`${API}/chart_data`, {
     method:"POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify(criteria)
   });
   const j = await r.json();
+  if (j.error) { alert(j.error); return; }
+  window.__lastChartPayload = j;
   const el = document.getElementById("chart");
   const chart = echarts.init(el);
+  const coordinates = compactHaltView ? (j.compact_time_seconds || j.time_seconds || []) : (j.time_seconds || []);
+  const chartX = index => Number(coordinates[index] ?? index);
+  const compactBreaks = compactHaltView ? (j.compact_breaks || []) : [];
+  document.getElementById("chartTimeNote").textContent = compactHaltView
+    ? "Confirmed stationary time keeps its first 3 minutes; excess beyond that is compressed to at most 1 second. Hover for recorded times."
+    : "Full recorded time; no halt compression.";
+  document.getElementById("fullTimeChart").style.background = compactHaltView ? "#64748b" : "#2563a6";
+  document.getElementById("compactTimeChart").style.background = compactHaltView ? "#2563a6" : "#64748b";
 
   // Use one effective operating limit. A PSR replaces the MPS only when it is
   // lower, so the speed trace can be assessed against one stepped green area.
@@ -1693,7 +1712,7 @@ async function drawChart(criteria){
     if (station) {
       const isLastStation = index === lastStationIndex;
       stationMarkLines.push({
-        xAxis: j.labels[index],
+        xAxis: chartX(index),
         label: {
           show: true,
           formatter: station,
@@ -1720,7 +1739,7 @@ async function drawChart(criteria){
   referenceLabels.forEach((reference, index) => {
     if (reference) {
       stationMarkLines.push({
-        xAxis: j.labels[index],
+        xAxis: chartX(index),
         label: {
           show: true,
           formatter: reference,
@@ -1742,7 +1761,7 @@ async function drawChart(criteria){
   signalLabels.forEach((signal, index) => {
     if (signal) {
       stationMarkLines.push({
-        xAxis: j.labels[index],
+        xAxis: chartX(index),
         label: {
           formatter: signal,
           position: 'insideEndTop',
@@ -1772,18 +1791,34 @@ async function drawChart(criteria){
       .filter(Boolean)
   });
 
+  const speedData = j.values.map((value, index) => [chartX(index), value]);
+  const limitData = effectiveLimits.map((value, index) => [chartX(index), value]);
+  const maxX = coordinates.length ? chartX(coordinates.length - 1) : 1;
   chart.setOption({
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: function(params) {
+        const index = params?.[0]?.dataIndex ?? 0;
+        const time = String((j.point_timestamps || j.labels)[index] || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        const speed = j.values[index];
+        return `${time}<br/>Speed: ${speed == null ? 'No reading' : `${Number(speed).toFixed(1)} km/h`}`;
+      }
+    },
     grid: { left: 40, right: 55, top: 80, bottom: 40 },
     xAxis: {
-      type: 'category',
-      data: j.labels,
-      name: 'Time',
+      type: 'value',
+      min: 0,
+      max: maxX || 1,
+      name: compactHaltView ? 'Time (long halts shortened)' : 'Time',
       axisLabel: {
         rotate: 45,
         fontSize: 9,
         formatter: function(value) {
-          return value.split(' ')[1] || value; // Show only HH:MM
+          let nearest = 0;
+          for (let i = 1; i < coordinates.length; i++) {
+            if (Math.abs(coordinates[i] - value) < Math.abs(coordinates[nearest] - value)) nearest = i;
+          }
+          return (j.labels[nearest] || '').split(' ')[1] || '';
         }
       }
     },
@@ -1792,21 +1827,35 @@ async function drawChart(criteria){
       {
         name: 'MPS/PSR Limit',
         type: 'line',
-        step: 'middle',
+        step: 'end',
         symbol: 'none',
         connectNulls: false,
         lineStyle: { color: '#32cd32', width: 1.5 },
         areaStyle: { color: 'rgba(50, 205, 50, 0.22)' },
-        data: effectiveLimits,
+        data: limitData,
         z: 1
       },
       {
         name: 'Speed',
         type: 'line',
-        smooth: true,
+        smooth: false,
         lineStyle: { color: '#0c6cf2', width: 1.6 },
         itemStyle: { color: '#0c6cf2' },
-        data: j.values,
+        data: speedData,
+        markArea: compactBreaks.length ? {
+          silent: true,
+          itemStyle: { color: 'rgba(217, 119, 6, 0.16)' },
+          label: {
+            show: true,
+            color: '#92400e',
+            fontSize: 9,
+            formatter: function(params) { return params.name || 'halt time shortened'; }
+          },
+          data: compactBreaks.map(b => [
+            { name: `>${Math.round((b.actual_extra_seconds || 0) / 60)} min excess compressed`, xAxis: b.compact_start_seconds },
+            { xAxis: b.compact_end_seconds }
+          ])
+        } : undefined,
         markLine: stationMarkLines.length ? {
           symbol: 'none',
           data: stationMarkLines
@@ -1814,8 +1863,17 @@ async function drawChart(criteria){
         z: 3
       }
     ]
-  });
+  }, true);
 }
+
+document.getElementById("fullTimeChart").onclick = () => {
+  compactHaltView = false;
+  if (lastChartCriteria) drawChart(lastChartCriteria);
+};
+document.getElementById("compactTimeChart").onclick = () => {
+  compactHaltView = true;
+  if (lastChartCriteria) drawChart(lastChartCriteria);
+};
 
 async function analyzeAndPlot(){
   const criteria = getCriteria();
