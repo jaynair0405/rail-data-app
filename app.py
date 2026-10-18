@@ -924,23 +924,25 @@ def _geofence_limit(geo: dict[str, Any]) -> float:
 
 def _within_geofence(lat: float | None, lon: float | None, geos: list[dict[str, Any]]) -> tuple[bool, float | None]:
     """
-    Determine whether a point lies inside any geofence, using each entry's radius.
+    Check the closest matching geofence using that entry's radius.
     Returns (is_inside, closest_distance) so callers can log/debug misses.
     """
     if lat is None or lon is None:
         return False, None
-    closest = None
+    closest_geo = None
+    closest_distance = None
     for geo in geos:
         g_lat = geo.get("latitude")
         g_lon = geo.get("longitude")
         if g_lat is None or g_lon is None:
             continue
         dist = _haversine_m(lat, lon, g_lat, g_lon)
-        if closest is None or dist < closest:
-            closest = dist
-        if dist <= _geofence_limit(geo):
-            return True, dist
-    return False, closest
+        if closest_distance is None or dist < closest_distance:
+            closest_geo = geo
+            closest_distance = dist
+    if closest_geo is None or closest_distance is None:
+        return False, None
+    return closest_distance <= _geofence_limit(closest_geo), closest_distance
 
 
 def _safe_signal_table_name() -> str:
