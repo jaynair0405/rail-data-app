@@ -1212,7 +1212,7 @@ function renderBrakingTable(halts) {
 
   const rowsHtml = halts.map(halt => {
     const ghatMarker = halt.in_ghat_section ? " ▲" : "";
-    const info = `<strong>${halt.station || "Halt"}${ghatMarker}</strong><br/><small>${halt.logging_time || ""}</small>`;
+    const info = `<strong>${halt.station_label || halt.station || "Halt"}${ghatMarker}</strong><br/><small>${halt.logging_time || ""}</small>`;
     let rowClass = "";
     const cells = BRAKE_OFFSETS.map(offset => {
       const key = String(offset);
@@ -1276,7 +1276,7 @@ function renderBrakingChart(halts) {
     return;
   }
   const series = halts.map(halt => {
-    const label = halt.station ? `${halt.station}` : `Halt ${halt.sequence}`;
+    const label = halt.station ? `${halt.station_label || halt.station}` : `Halt ${halt.sequence}`;
     const legend = label || `Halt ${halt.sequence}`;
     const data = BRAKE_CHART_STEPS.map(step => {
       if (step === 0) {
@@ -1364,7 +1364,7 @@ function renderDecelerationTable(rows) {
       ? `${formatSpeedCell(sharpSpeed)} km/h @ ${Math.round(sharpDistance)} m${sharpTime ? `<br/><small>${sharpTime}</small>` : ""}`
       : "—";
     return `<tr>
-      <td>${row.station || "—"}<br/><small>${row.halt_time || ""}</small></td>
+      <td>${row.station_label || row.station || "—"}<br/><small>${row.halt_time || ""}</small></td>
       <td>${formatSpeedCell(row.speed_1000_kmph)}</td>
       <td>${formatSpeedCell(row.speed_400_kmph)}</td>
       <td>${formatSpeedCell(row.speed_250_kmph)}</td>
@@ -1667,53 +1667,114 @@ async function drawChart(criteria){
   const el = document.getElementById("chart");
   const chart = echarts.init(el);
 
-  // Build restriction markAreas, ensuring single-point restrictions have visible width
-  const markAreas = (j.restrictions || []).map(seg => {
-    let endPoint = seg.end || seg.start;
-
-    // If start === end (single minute restriction), extend to next time point
-    if (seg.start === endPoint) {
-      const startIdx = j.labels.indexOf(seg.start);
-      if (startIdx !== -1 && startIdx < j.labels.length - 1) {
-        endPoint = j.labels[startIdx + 1];
-      }
-    }
-
-    return [
-      { xAxis: seg.start, yAxis: 0 },
-      { xAxis: endPoint, yAxis: seg.limit }
-    ];
+  // Use one effective operating limit. A PSR replaces the MPS only when it is
+  // lower, so the speed trace can be assessed against one stepped green area.
+  const psrLimits = (j.limit_values || []).map(v => v ?? null);
+  const mpsLimits = (j.mps || []).map(v => v ?? null);
+  const effectiveLimits = j.labels.map((_, index) => {
+    const mps = mpsLimits[index];
+    const psr = psrLimits[index];
+    if (mps == null) return psr;
+    if (psr == null) return mps;
+    return Math.min(mps, psr);
   });
 
   // Prepare station halt markers
   const stationLabels = j.station_labels || [];
+  const signalLabels = j.signal_labels || [];
+  const referenceLabels = j.reference_labels || [];
   const stationMarkLines = [];
+  const lastStationIndex = stationLabels.reduce(
+    (last, station, index) => station ? index : last,
+    -1
+  );
 
   stationLabels.forEach((station, index) => {
     if (station) {
+      const isLastStation = index === lastStationIndex;
       stationMarkLines.push({
         xAxis: j.labels[index],
         label: {
+          show: true,
           formatter: station,
           position: 'insideEndTop',
+          offset: isLastStation ? [-4, 12] : [4, 12],
+          align: isLastStation ? 'right' : 'left',
           fontSize: 9,
-          color: '#333',
-          backgroundColor: 'rgba(255, 255, 255, 0.8)',
+          color: '#111827',
+          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+          padding: 2,
+          borderRadius: 2,
+          z: 20
+        },
+        lineStyle: {
+          color: '#374151',
+          type: 'dashed',
+          width: 1.5
+        },
+        z: 20
+      });
+    }
+  });
+
+  referenceLabels.forEach((reference, index) => {
+    if (reference) {
+      stationMarkLines.push({
+        xAxis: j.labels[index],
+        label: {
+          show: true,
+          formatter: reference,
+          position: 'insideEndTop',
+          offset: index === 0 ? [-4, 12] : [4, 12],
+          align: index === 0 ? 'right' : 'left',
+          fontSize: 9,
+          color: '#1e40af',
+          backgroundColor: 'rgba(239, 246, 255, 0.95)',
+          padding: 2,
+          borderRadius: 2
+        },
+        lineStyle: { color: '#2563a6', type: 'dotted', width: 1 },
+        z: 20
+      });
+    }
+  });
+
+  signalLabels.forEach((signal, index) => {
+    if (signal) {
+      stationMarkLines.push({
+        xAxis: j.labels[index],
+        label: {
+          formatter: signal,
+          position: 'insideEndTop',
+          offset: [4, 4],
+          align: 'left',
+          fontSize: 9,
+          color: '#7c2d12',
+          backgroundColor: 'rgba(255, 237, 213, 0.9)',
           padding: 2,
           borderRadius: 2
         },
         lineStyle: {
-          color: '#888',
-          type: 'dashed',
+          color: '#f97316',
+          type: 'dotted',
           width: 1
         }
       });
     }
   });
 
+  console.debug('[CHART HALT LABELS]', {
+    station: stationLabels
+      .map((value, index) => value ? `${j.labels[index]}=${value}` : null)
+      .filter(Boolean),
+    signal: signalLabels
+      .map((value, index) => value ? `${j.labels[index]}=${value}` : null)
+      .filter(Boolean)
+  });
+
   chart.setOption({
     tooltip: { trigger: 'axis' },
-    grid: { left: 40, right: 20, top: 30, bottom: 40 },
+    grid: { left: 40, right: 55, top: 80, bottom: 40 },
     xAxis: {
       type: 'category',
       data: j.labels,
@@ -1729,26 +1790,28 @@ async function drawChart(criteria){
     yAxis: { type: 'value', name: j.yLabel || 'Speed' },
     series: [
       {
-        name: 'Speed',
-        type: 'line',
-        smooth: true,
-        data: j.values,
-        markArea: markAreas.length ? {
-          itemStyle: { color: 'rgba(255, 99, 132, 0.25)' },
-          data: markAreas
-        } : undefined,
-        markLine: stationMarkLines.length ? {
-          symbol: 'none',
-          data: stationMarkLines
-        } : undefined
-      },
-      {
-        name: 'MPS',
+        name: 'MPS/PSR Limit',
         type: 'line',
         step: 'middle',
         symbol: 'none',
-        lineStyle: { color: '#ffa500', width: 2 },
-        data: (j.mps || []).map(v => v ?? null)
+        connectNulls: false,
+        lineStyle: { color: '#32cd32', width: 1.5 },
+        areaStyle: { color: 'rgba(50, 205, 50, 0.22)' },
+        data: effectiveLimits,
+        z: 1
+      },
+      {
+        name: 'Speed',
+        type: 'line',
+        smooth: true,
+        lineStyle: { color: '#0c6cf2', width: 1.6 },
+        itemStyle: { color: '#0c6cf2' },
+        data: j.values,
+        markLine: stationMarkLines.length ? {
+          symbol: 'none',
+          data: stationMarkLines
+        } : undefined,
+        z: 3
       }
     ]
   });

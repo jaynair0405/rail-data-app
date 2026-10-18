@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 import os
+from rtis_halts import detect_halts, departure_anchor, halt_label, timestamp as halt_timestamp
+from collections import Counter
 
 __version__ = "1.2.0"
 
@@ -205,6 +207,17 @@ ROUTE_ADJACENCY: dict[str, set[tuple[str, str]]] = {}  # Maps route_id to allowe
 GEOFENCE_DATA: list[dict[str, Any]] = []
 GEOFENCE_TOLERANCE_M = 100.0
 GEOFENCE_RADIUS_MARGIN_M = 60.0
+try:
+    RTIS_SIGNAL_MATCH_RADIUS_M = max(1.0, float(os.getenv("RTIS_SIGNAL_MATCH_RADIUS_M", "100")))
+except (TypeError, ValueError):
+    RTIS_SIGNAL_MATCH_RADIUS_M = 100.0
+RTIS_SIGNALS_TABLE = os.getenv("RTIS_SIGNALS_TABLE", "div_signals")
+SIGNAL_CACHE_TTL_SECONDS = 300
+SIGNALS_CACHE: list[dict[str, Any]] = []
+SIGNALS_CACHE_LOADED_AT = 0.0
+SIGNALS_CACHE_LOCK = threading.Lock()
+TIMETABLE_HALT_CACHE: dict[str, tuple[float, set[str]]] = {}
+TIMETABLE_HALT_CACHE_LOCK = threading.Lock()
 RESTRICTION_POINT_TOLERANCE_M = 120.0
 SPEED_RESTRICTIONS: list[dict[str, Any]] = []
 MPS_POINT_TOLERANCE_M = 500.0
@@ -930,6 +943,201 @@ def _within_geofence(lat: float | None, lon: float | None, geos: list[dict[str, 
     return False, closest
 
 
+def _safe_signal_table_name() -> str:
+    """Return a safe configured signal table name for the SQL identifier."""
+    candidate = RTIS_SIGNALS_TABLE.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]+", candidate):
+        return "div_signals"
+    return candidate
+
+
+def _signal_value(row: dict[str, Any], *names: str) -> Any:
+    """Read a signal field across the known naming variants."""
+    normalized = {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): value
+        for key, value in row.items()
+    }
+    for name in names:
+        value = normalized.get(re.sub(r"[^a-z0-9]", "", name.lower()))
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+def _load_signals(force: bool = False) -> list[dict[str, Any]]:
+    """Load coordinate-bearing signal reference rows, failing open if unavailable."""
+    global SIGNALS_CACHE, SIGNALS_CACHE_LOADED_AT
+    now = time.time()
+    with SIGNALS_CACHE_LOCK:
+        if not force and now - SIGNALS_CACHE_LOADED_AT < SIGNAL_CACHE_TTL_SECONDS:
+            return SIGNALS_CACHE
+
+    signals: list[dict[str, Any]] = []
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(f"SELECT * FROM `{_safe_signal_table_name()}`")
+        for row in cursor.fetchall():
+            try:
+                lat = float(_signal_value(row, "latitude", "lat", "signal_latitude", "signal_lat"))
+                lon = float(_signal_value(row, "longitude", "lon", "lng", "signal_longitude", "signal_lon", "signal_lng"))
+            except (TypeError, ValueError):
+                continue
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            signals.append({
+                "signal_number": _signal_value(row, "signal_number", "signal_id", "signal_code", "signal_no", "code"),
+                "signal_id": _signal_value(row, "signal_id", "signal_code", "signal_no", "signal_number", "code", "id"),
+                "signal_name": _signal_value(row, "signal_name", "name", "signal"),
+                "signal_type": _signal_value(row, "signal_type", "type"),
+                "direction": str(_signal_value(row, "direction", "dir") or "").strip().upper(),
+                "section_code": _signal_value(row, "section_code", "section", "route"),
+                "latitude": lat,
+                "longitude": lon,
+            })
+        print(f"[SIGNALS] Loaded {len(signals)} coordinate-bearing rows from {_safe_signal_table_name()}")
+    except Exception as exc:
+        print(f"[SIGNALS] Optional signal matching unavailable: {exc}")
+        signals = []
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
+
+    with SIGNALS_CACHE_LOCK:
+        SIGNALS_CACHE = signals
+        SIGNALS_CACHE_LOADED_AT = now
+    return signals
+
+
+def _match_signal_for_halt(halt: dict[str, Any], direction: str | None = None) -> dict[str, Any] | None:
+    """Match an otherwise-unlabelled confirmed halt to a nearby signal."""
+    lat = halt.get("latitude")
+    lon = halt.get("longitude")
+    if lat is None or lon is None:
+        return None
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except (TypeError, ValueError):
+        return None
+
+    direction_norm = (direction or "").strip().upper()
+    candidates = []
+    for signal in _load_signals():
+        signal_direction = signal.get("direction", "")
+        if signal_direction and direction_norm and signal_direction not in (direction_norm, "BOTH", "ALL"):
+            continue
+        distance = _haversine_m(lat, lon, signal["latitude"], signal["longitude"])
+        if distance <= RTIS_SIGNAL_MATCH_RADIUS_M:
+            candidates.append((distance, signal))
+
+    if not candidates:
+        return None
+    distance, signal = min(candidates, key=lambda item: item[0])
+    return {
+        **signal,
+        "distance_m": round(distance, 1),
+        "match_source": "GPS_SIGNAL",
+        "match_radius_m": RTIS_SIGNAL_MATCH_RADIUS_M,
+        "match_confidence": round(max(0.0, 1.0 - distance / RTIS_SIGNAL_MATCH_RADIUS_M), 3),
+    }
+
+
+def _load_scheduled_halt_codes(
+    train_number: str | None,
+    direction: str | None = None,
+) -> set[str]:
+    """Load scheduled WTT halt station codes for a train and direction.
+
+    The control-office WTT page is backed by div_train_stops, not the currently
+    empty div_timetable_halts table.  Keep the lookup failing open so RTIS can
+    still use signal matching when the WTT database is unavailable.
+    """
+    train_norm = str(train_number or "").strip()
+    if not train_norm:
+        return set()
+    direction_norm = str(direction or "").strip().upper()
+    cache_key = f"{train_norm}|{direction_norm}"
+    now = time.time()
+    with TIMETABLE_HALT_CACHE_LOCK:
+        cached = TIMETABLE_HALT_CACHE.get(cache_key)
+        if cached and now - cached[0] < SIGNAL_CACHE_TTL_SECONDS:
+            return cached[1]
+
+    codes: set[str] = set()
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        sql = """
+            SELECT DISTINCT s.station_code
+            FROM div_train_stops s
+            JOIN div_trains t ON t.train_id = s.train_id
+            LEFT JOIN div_train_aliases a ON a.train_id = t.train_id
+            WHERE (t.train_no = %s OR a.train_no = %s)
+              AND s.event_type = 'halt'
+        """
+        params: list[Any] = [train_norm, train_norm]
+        if direction_norm in {"UP", "DN"}:
+            sql += " AND s.direction = %s"
+            params.append(direction_norm)
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+        codes = {
+            str(row.get("station_code") or "").strip().upper()
+            for row in rows
+            if str(row.get("station_code") or "").strip()
+        }
+
+        # Some RTIS files carry the train number for the return/working leg,
+        # while the WTT catalogues that number under the opposite direction
+        # (for example, 22732 is stored as DN in the WTT).  If the strict
+        # direction lookup is empty, use the train-number WTT halt list.  This
+        # is safer than allowing a station halt to be mistaken for a signal.
+        if not codes and direction_norm in {"UP", "DN"}:
+            cursor.execute(
+                """
+                SELECT DISTINCT s.station_code
+                FROM div_train_stops s
+                JOIN div_trains t ON t.train_id = s.train_id
+                LEFT JOIN div_train_aliases a ON a.train_id = t.train_id
+                WHERE (t.train_no = %s OR a.train_no = %s)
+                  AND s.event_type = 'halt'
+                """,
+                (train_norm, train_norm),
+            )
+            codes = {
+                str(row.get("station_code") or "").strip().upper()
+                for row in cursor.fetchall()
+                if str(row.get("station_code") or "").strip()
+            }
+            if codes:
+                print(
+                    f"[TIMETABLE] Direction {direction_norm} had no WTT rows; "
+                    f"using train-number fallback for {train_norm}"
+                )
+        print(
+            f"[TIMETABLE] Loaded {len(codes)} WTT scheduled halts for "
+            f"train {train_norm} direction {direction_norm or 'ANY'}"
+        )
+    except Exception as exc:
+        print(f"[TIMETABLE] WTT halt lookup unavailable for {train_norm}: {exc}")
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
+
+    with TIMETABLE_HALT_CACHE_LOCK:
+        TIMETABLE_HALT_CACHE[cache_key] = (now, codes)
+    return codes
+
+
 def _station_coordinates(station_code: str, direction: str | None = None) -> tuple[float, float] | None:
     geos = _geofences_for_station(station_code, direction)
     if geos:
@@ -940,6 +1148,29 @@ def _station_coordinates(station_code: str, direction: str | None = None) -> tup
         if geo.get("station_code") == station_code.upper():
             return (geo.get("latitude"), geo.get("longitude"))
     return None
+
+
+def _halt_is_inside_station_fence(
+    halt: dict[str, Any],
+    station_code: str,
+    direction: str | None,
+) -> bool | None:
+    """Return whether a coded halt GPS point is inside its station fence.
+
+    ``None`` means the point or station fencing is unavailable.  In that case
+    callers retain the established station-code fallback rather than making a
+    geometric assumption.
+    """
+    if not station_code or halt.get("latitude") is None or halt.get("longitude") is None:
+        return None
+    geos = _geofences_for_station(station_code, direction)
+    if not geos:
+        return None
+    inside, distance = _within_geofence(
+        halt.get("latitude"), halt.get("longitude"), geos
+    )
+    halt["station_distance_m"] = round(distance, 1) if distance is not None else None
+    return inside
 
 
 def _calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -1442,6 +1673,64 @@ def _find_geofence_end_idx(df: pl.DataFrame, station_code: str, direction: str |
     return fallback_idx
 
 
+def _origin_departure_anchor(df: pl.DataFrame, departure_idx: int, station_code: str) -> int:
+    """Retain only the final standstill reading of the current crew's departure."""
+    speed_col = _find_speed_column(df.columns)
+    time_col = _find_time_column(df.columns)
+    if not speed_col or not time_col:
+        return departure_idx
+    station_col = _first_matching_column(df.columns, "STATION")
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    return departure_anchor(
+        df[speed_col].to_list(), df[time_col].to_list(), departure_idx,
+        df[station_col].to_list() if station_col else None, station_code,
+        df[lat_col].to_list() if lat_col else None,
+        df[lon_col].to_list() if lon_col else None,
+    )
+
+
+def _extend_destination_confirmation(
+    df: pl.DataFrame, arrival_idx: int, from_idx: int | None,
+    station_code: str, direction: str | None,
+) -> int:
+    """Retain up to three minutes of evidence to confirm the destination stop.
+
+    This bounded lookahead cannot pull in a later working/return journey.
+    Keep the established boundary if no stop can be confirmed.
+    """
+    time_col = _find_time_column(df.columns)
+    if not time_col:
+        return arrival_idx
+    if from_idx is not None and from_idx > arrival_idx:
+        return arrival_idx
+    arrival_time = halt_timestamp(df[time_col][arrival_idx])
+    if arrival_time is None:
+        return arrival_idx
+    upper = arrival_idx
+    for i in range(arrival_idx + 1, df.height):
+        dt = halt_timestamp(df[time_col][i])
+        if dt is None or not 0 <= (dt - arrival_time).total_seconds() <= 180:
+            break
+        upper = i
+    lower = from_idx if from_idx is not None else 0
+    evidence = df.slice(lower, upper - lower + 1)
+    station_col = _first_matching_column(df.columns, "STATION")
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    geos = _geofences_for_station(station_code, direction)
+    for event in _confirmed_halt_events(evidence):
+        idx = lower + event["index"]
+        confirmed = lower + event["confirmed_index"]
+        if confirmed < arrival_idx:
+            continue
+        code = str(df[station_col][idx] or "").strip().upper() if station_col else ""
+        inside = bool(geos and lat_col and lon_col and _within_geofence(df[lat_col][idx], df[lon_col][idx], geos)[0])
+        if code == station_code or inside:
+            return max(arrival_idx, confirmed)
+    return arrival_idx
+
+
 def _find_speed_column(columns: list[str]) -> str | None:
     for keys in [
         ("SPEED",),
@@ -1612,6 +1901,8 @@ def apply_criteria(df: pl.DataFrame, crit: Dict[str, Any]) -> pl.DataFrame:
         from_idx = _find_geofence_start_idx(out, norm_from, norm_dir, to_station=norm_to)
         if from_idx is None and station_col:
             from_idx = _find_station_row_idx(out, station_col, norm_from, first=True)
+        if from_idx is not None:
+            from_idx = _origin_departure_anchor(out, from_idx, norm_from)
     if to_eq:
         ge_end = _find_geofence_end_idx(out, norm_to, norm_dir, start_after=from_idx)
         station_stop = (
@@ -1626,6 +1917,9 @@ def apply_criteria(df: pl.DataFrame, crit: Dict[str, Any]) -> pl.DataFrame:
                 to_idx = station_stop
         elif station_col:
             to_idx = station_stop or _find_station_row_idx(out, station_col, norm_to, first=False)
+
+    if to_idx is not None and norm_to:
+        to_idx = _extend_destination_confirmation(out, to_idx, from_idx, norm_to, norm_dir)
 
     if from_idx is not None or to_idx is not None:
         print(f"[DEBUG] from_idx={from_idx}, to_idx={to_idx}")
@@ -1689,108 +1983,64 @@ def export(request: Request, criteria: dict = Body(...), run_id: str | None = Qu
 # Chart Data
 # ------------------------------
 def _detect_halt_markers_from_enriched(enriched_df: pl.DataFrame, original_columns: list[str]) -> list[dict[str, Any]]:
-    """
-    Detect halts with 500m spacing for station labels on speed profile chart.
-    Works with enriched DataFrame that has _TS, _SPD columns.
-    Returns list of {timestamp, station} for each halt.
-    """
-    # Get station column from original columns
+    """Use the same confirmed stop events as the braking tables and PDF."""
     station_col = _first_matching_column(original_columns, "STATION", "CODE") or _first_matching_column(original_columns, "STATION")
-    # Look for distance column - matches distFromPrevLatLng, distFromSpeed, or DISTANCE
-    dist_col = _first_matching_column(original_columns, "DISTANCE") or \
-               _first_matching_column(original_columns, "dist", "From") or \
-               _first_matching_column(original_columns, "dist")
-
-    print(f"[DEBUG HALT] Station column: {station_col}, Distance column: {dist_col}")
-    print(f"[DEBUG HALT] Enriched DF columns: {enriched_df.columns}")
-
-    if not dist_col:
-        print("[DEBUG HALT] No distance column found, returning empty")
-        return []
-
-    # Extract data from enriched DataFrame
-    speeds = enriched_df["_SPD"].to_list()
-    timestamps = enriched_df["_TS"].to_list()
-
-    # Get stations if column exists
-    if station_col and station_col in enriched_df.columns:
-        stations = enriched_df[station_col].cast(pl.Utf8).to_list()
-    else:
-        stations = [None] * len(speeds)
-
-    # Get distance steps from original column
-    if dist_col in enriched_df.columns:
-        dist_steps = enriched_df[dist_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
-    else:
-        return []
-
-    # Calculate cumulative distance
-    cumulative: list[float] = []
-    running = 0.0
-    for step in dist_steps:
-        running += max(0.0, step or 0.0)
-        cumulative.append(running)
-
-    # Find first movement
-    first_move_idx = next((i for i, sp in enumerate(speeds) if sp and sp > 0.5), None)
-    print(f"[DEBUG HALT] First movement index: {first_move_idx}, Total rows: {len(speeds)}")
-    if first_move_idx is None:
-        print("[DEBUG HALT] No movement detected, returning empty")
-        return []
-
-    # Detect halts with 500m spacing
-    halts: list[dict[str, Any]] = []
-    halts_before_filter: list[dict[str, Any]] = []
-    last_halt_distance: float | None = None
-
-    # Add starting station (before first movement) if it has a station code
-    if first_move_idx > 0:
-        start_idx = 0
-        start_station = stations[start_idx]
-        display_start = str(start_station).strip() if start_station and start_station != "None" else None
-
-        if display_start:
-            halts.append({
-                "timestamp": timestamps[start_idx],
-                "station": display_start,
-            })
-            last_halt_distance = cumulative[start_idx]
-            print(f"[DEBUG HALT] Added starting station: {display_start} at row {start_idx}")
-
-    for idx in range(first_move_idx + 1, len(speeds)):
-        prev_speed = speeds[idx - 1]
-        current_speed = speeds[idx]
-
-        # Initial trigger: speed drops below threshold
-        if current_speed <= HALT_TRIGGER_SPEED and prev_speed > HALT_TRIGGER_SPEED:
-            # Confirmation: speed must stay low for at least 10 consecutive seconds
-            if not _is_confirmed_halt(speeds, idx):
-                continue
-
-            halt_distance = cumulative[idx]
-            halt_station = stations[idx]
-            display_station = str(halt_station).strip() if halt_station and halt_station != "None" else None
-
-            halts_before_filter.append({
-                "distance": halt_distance,
-                "station": display_station,
-            })
-
-            # Apply 500m spacing rule
-            if last_halt_distance is not None and (halt_distance - last_halt_distance) < 500.0:
-                continue
-
-            if display_station:
-                halts.append({
-                    "timestamp": timestamps[idx],
-                    "station": display_station,
-                })
-                last_halt_distance = halt_distance
-
-    print(f"[DEBUG HALT] Found {len(halts_before_filter)} confirmed halts: {[(h['distance'], h['station']) for h in halts_before_filter[:10]]}")
-    print(f"[DEBUG HALT] After 500m filter + station check: {len(halts)} halts")
-
+    halts = []
+    for event in _confirmed_halt_events(enriched_df):
+        idx = event["index"]
+        station = enriched_df[station_col][idx] if station_col else None
+        halts.append({
+            "timestamp": enriched_df["_TS"][idx],
+            "station": str(station).strip() if station is not None else None,
+            "latitude": enriched_df["_LAT_FLOAT"][idx],
+            "longitude": enriched_df["_LON_FLOAT"][idx],
+        })
     return halts
+
+
+def _annotate_signal_matches(
+    halt_markers: list[dict[str, Any]],
+    direction: str | None,
+    train_number: str | None,
+) -> list[dict[str, Any]]:
+    """Classify halts as scheduled station, signal, or CSV-code fallback."""
+    scheduled_codes = _load_scheduled_halt_codes(train_number, direction)
+    annotated = []
+    for halt in halt_markers:
+        item = dict(halt)
+        station_code = str(item.get("station") or "").strip().upper()
+        scheduled_station = station_code and station_code in scheduled_codes
+        inside_station_fence = (
+            _halt_is_inside_station_fence(item, station_code, direction)
+            if scheduled_station
+            else None
+        )
+        # RTIS often continues reporting the last/current station code while
+        # the train is still approaching it. Only give the WTT station
+        # precedence when the halt point is actually inside that station's
+        # geofence. Outside the fence, a nearby signal is the better label.
+        if scheduled_station and inside_station_fence is not False:
+            item["match_source"] = "STATION"
+        else:
+            signal = _match_signal_for_halt(item, direction)
+            if signal:
+                item["signal"] = signal
+                item["match_source"] = "SIGNAL"
+            elif station_code:
+                item["match_source"] = "FALLBACK_STATION"
+            else:
+                item["match_source"] = "UNKNOWN"
+        signal = item.get("signal") or {}
+        print(
+            "[HALT MATCH] "
+            f"time={item.get('timestamp')} station={station_code or '—'} "
+            f"source={item.get('match_source')} "
+            f"station_distance_m={item.get('station_distance_m')} "
+            f"signal={signal.get('signal_number') or signal.get('signal_id') or '—'} "
+            f"signal_distance_m={signal.get('distance_m', '—')}"
+        )
+        annotated.append(item)
+    return annotated
 
 
 def _map_halts_to_chart(halt_markers: list[dict[str, Any]], chart_timestamps: list[Any]) -> list[str | None]:
@@ -1804,6 +2054,8 @@ def _map_halts_to_chart(halt_markers: list[dict[str, Any]], chart_timestamps: li
         return result
 
     for halt in halt_markers:
+        if halt.get("match_source") == "SIGNAL":
+            continue
         halt_ts = halt["timestamp"]
         station = halt["station"]
 
@@ -1831,9 +2083,73 @@ def _map_halts_to_chart(halt_markers: list[dict[str, Any]], chart_timestamps: li
 
         # Assign station to closest chart point (within 2 minutes tolerance)
         if best_idx is not None and min_diff_seconds is not None and min_diff_seconds < 120:
-            result[best_idx] = station
+            result[best_idx] = halt_label(station)
 
     return result
+
+
+def _map_signal_labels_to_chart(halt_markers: list[dict[str, Any]], chart_timestamps: list[Any]) -> list[str | None]:
+    """Map matched signal names to minute chart points."""
+    result: list[str | None] = [None] * len(chart_timestamps)
+    for halt in halt_markers:
+        signal = halt.get("signal")
+        halt_ts = halt.get("timestamp")
+        if not signal or halt_ts is None:
+            continue
+        best_idx = None
+        min_diff_seconds = None
+        for idx, chart_ts in enumerate(chart_timestamps):
+            if chart_ts is None:
+                continue
+            try:
+                diff_seconds = abs((halt_ts - chart_ts).total_seconds())
+            except (AttributeError, TypeError):
+                continue
+            if min_diff_seconds is None or diff_seconds < min_diff_seconds:
+                min_diff_seconds = diff_seconds
+                best_idx = idx
+        if best_idx is not None and min_diff_seconds is not None and min_diff_seconds < 120:
+            label = signal.get("signal_number") or signal.get("signal_id") or signal.get("signal_name") or "Signal"
+            result[best_idx] = str(label)
+    return result
+
+
+def _route_reference_markers(
+    enriched: pl.DataFrame, columns: list[str], criteria: dict,
+    halts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Crew origin and passing ghat references, separate from confirmed halts.
+
+    Passing timestamps are the first CSV code observation for that visit;
+    they are route references, not surveyed positions or inferred stops.
+    """
+    station_col = _first_matching_column(columns, "STATION", "CODE") or _first_matching_column(columns, "STATION")
+    if enriched.is_empty() or not station_col:
+        return []
+    stations = [str(v or "").strip().upper() for v in enriched[station_col].to_list()]
+    times = enriched["_TS"].to_list()
+    references = []
+    origin = str(criteria.get("from_station_equals") or "").strip().upper()
+    if origin and stations[0] == origin:
+        references.append({"station": origin, "timestamp": times[0],
+                           "label": f"{halt_label(origin)} (start)",
+                           "event_type": "origin", "source": "SELECTED_ROUTE_START"})
+    begin = 0
+    while begin < len(stations):
+        end = begin + 1
+        code = stations[begin]
+        while end < len(stations) and stations[end] == code:
+            end += 1
+        if code in {"X101", "X102", "X103"}:
+            stopped = any(str(h.get("station") or "").strip().upper() == code and
+                          times[begin] <= h["timestamp"] <= times[end - 1]
+                          for h in halts)
+            if not stopped:
+                references.append({"station": code, "timestamp": times[begin],
+                                   "label": f"{halt_label(code)} (pass)",
+                                   "event_type": "passing", "source": "CSV_CODE_ENTRY"})
+        begin = end
+    return references
 
 
 def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any]:
@@ -1872,8 +2188,14 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
         pl.Series("_MPS_LIMIT", mps_limits),
     ])
 
-    # Detect halts with 500m spacing for station labels on chart (before aggregation)
+    # Confirmed stops and route references remain separate before aggregation.
     halt_markers = _detect_halt_markers_from_enriched(enriched, dataset.columns)
+    halt_markers = _annotate_signal_matches(
+        halt_markers,
+        direction,
+        criteria.get("train_number"),
+    )
+    route_markers = _route_reference_markers(enriched, dataset.columns, criteria, halt_markers)
     print(f"[DEBUG] Detected {len(halt_markers)} halt markers with stations: {[h['station'] for h in halt_markers]}")
 
     df2 = (
@@ -1881,6 +2203,7 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
         .agg([
             pl.col("_SPD").mean().alias("_AVG"),
             pl.col("_SPD").last().alias("_LAST"),
+            pl.col("_SPD").first().alias("_FIRST_SPEED"),
             pl.col("_LIMIT").min().alias("_LIMIT_MIN"),
             pl.col("_MPS_LIMIT").min().alias("_MPS"),
             pl.col("_TS").first().alias("_FIRST_TS"),
@@ -1888,7 +2211,14 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
         .sort("_MIN")
     )
     labels = df2["_MIN"].dt.strftime("%Y-%m-%d %H:%M").to_list()
-    values = [float(x) if x is not None else 0.0 for x in df2["_LAST"].to_list()]
+    values = [float(x) if x is not None and math.isfinite(float(x)) else None
+              for x in df2["_LAST"].to_list()]
+    # The first chart point represents the actual crew-start reading, rather
+    # than the end of its minute (which may already show an accelerating train).
+    # Missing source speed stays missing; never insert a zero for appearance.
+    if values:
+        first_speed = df2["_FIRST_SPEED"][0]
+        values[0] = float(first_speed) if first_speed is not None and math.isfinite(float(first_speed)) else None
     limit_values = [float(x) if x is not None else None for x in df2["_LIMIT_MIN"].to_list()]
     mps_values_raw = [float(x) if x is not None else None for x in df2["_MPS"].to_list()]
     mps_values = _forward_fill(mps_values_raw)
@@ -1898,16 +2228,36 @@ def _build_chart_payload(dataset: pl.DataFrame, criteria: dict) -> Dict[str, Any
     # Map halts to chart labels (minute-aggregated)
     chart_timestamps = df2["_FIRST_TS"].to_list()
     station_labels = _map_halts_to_chart(halt_markers, chart_timestamps)
+    signal_labels = _map_signal_labels_to_chart(halt_markers, chart_timestamps)
+    reference_labels = _map_halts_to_chart(
+        [{"station": marker["label"], "timestamp": marker["timestamp"]}
+         for marker in route_markers], chart_timestamps,
+    )
     print(f"[DEBUG] Mapped {sum(1 for s in station_labels if s)} stations to {len(station_labels)} chart points")
 
     return {
         "labels": labels,
         "values": values,
+        "start_sample": {"timestamp": _stringify_time(enriched["_TS"][0]),
+                         "speed": values[0]} if values else None,
         "yLabel": "Speed (km/h)",
         "restrictions": segments,
         "mps": mps_values,
         "limit_values": limit_values,
         "station_labels": station_labels,
+        "signal_labels": signal_labels,
+        "reference_labels": reference_labels,
+        "route_markers": [{**m, "timestamp": _stringify_time(m["timestamp"])}
+                          for m in route_markers],
+        "halt_markers": [
+            {
+                "timestamp": _stringify_time(h.get("timestamp")),
+                "station": h.get("station"),
+                "match_source": h.get("match_source"),
+                "signal": h.get("signal"),
+            }
+            for h in halt_markers
+        ],
     }
 
 
@@ -2312,6 +2662,8 @@ def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
     if not labels or not values:
         return None
     x = list(range(len(labels)))
+    y_max = max((float(v) for v in values
+                 if isinstance(v, (int, float)) and math.isfinite(v)), default=100.0)
 
     # Add section title if present
     section_title = payload.get("section_title")
@@ -2322,13 +2674,22 @@ def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
         fig, ax = plt.subplots(figsize=(8, 3))
     ax.plot(x, values, color="#0c6cf2", linewidth=1.6)
     limit_vals = payload.get("limit_values") or []
-    if len(limit_vals) == len(x) and any(v is not None for v in limit_vals):
-        limit_series = [v if v is not None else float("nan") for v in limit_vals]
-        ax.fill_between(x, 0, limit_series, color="salmon", alpha=0.2, step="mid", label="PSR")
-        ax.plot(x, limit_series, color="#d9534f", linewidth=1.2, linestyle="--")
     mps = payload.get("mps") or []
-    if any(v is not None for v in mps):
-        ax.plot(x, [v if v is not None else float("nan") for v in mps], label="MPS", color="#ffa500", linewidth=1.2)
+    if len(limit_vals) == len(x) or len(mps) == len(x):
+        effective_limits = []
+        for index in range(len(x)):
+            psr = limit_vals[index] if index < len(limit_vals) else None
+            mps_value = mps[index] if index < len(mps) else None
+            if psr is None:
+                effective_limits.append(mps_value)
+            elif mps_value is None:
+                effective_limits.append(psr)
+            else:
+                effective_limits.append(min(psr, mps_value))
+        if any(value is not None for value in effective_limits):
+            limit_series = [value if value is not None else float("nan") for value in effective_limits]
+            ax.fill_between(x, 0, limit_series, color="#32cd32", alpha=0.22, step="mid", label="MPS/PSR Limit")
+            ax.plot(x, limit_series, color="#32cd32", linewidth=1.5, drawstyle="steps-mid")
     ax.set_ylabel("Speed (km/h)")
     ax.set_xlabel("Time")
 
@@ -2339,10 +2700,27 @@ def _render_speed_chart_image(payload: dict[str, Any]) -> io.BytesIO | None:
             # Draw vertical dashed line at halt
             ax.axvline(x=i, color='gray', linestyle='--', linewidth=0.8, alpha=0.5)
             # Add station label at top of chart
-            y_max = max(values) if values else 100
             ax.text(i, y_max * 0.95, station, rotation=90, va='top', ha='right',
                    fontsize=7, color='#333', bbox=dict(boxstyle='round,pad=0.3',
                    facecolor='white', edgecolor='none', alpha=0.7))
+
+    for i, label in enumerate(payload.get("reference_labels") or []):
+        if label:
+            ax.axvline(x=i, color='#2563a6', linestyle=':', linewidth=0.9, alpha=0.7)
+            ax.text(i, y_max * 0.95, label, rotation=90, va='top',
+                    ha='right', fontsize=7, color='#1e40af',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='#eff6ff',
+                              edgecolor='none', alpha=0.85))
+
+    # Keep signal evidence in PDF exports as well as in the browser chart.
+    # Place it below the station labels so the speed trace remains unobscured.
+    signal_labels = payload.get("signal_labels") or []
+    for i, signal in enumerate(signal_labels):
+        if signal:
+            ax.axvline(x=i, color='#f97316', linestyle=':', linewidth=0.8, alpha=0.7)
+            ax.text(i, y_max * 0.78, signal, rotation=90, va='top', ha='left',
+                    fontsize=7, color='#9a3412', bbox=dict(boxstyle='round,pad=0.3',
+                    facecolor='#fff7ed', edgecolor='none', alpha=0.85))
 
     # Create x-axis labels (time only)
     tick_count = min(6, len(labels))
@@ -2379,6 +2757,7 @@ def _render_brake_curve_images(curve_data: list[dict[str, Any]]) -> list[io.Byte
         return []
 
     images: list[io.BytesIO] = []
+    counts = Counter(h.get("station") for h in curve_data)
 
     # Process in batches of 6 halts
     for batch_start in range(0, len(curve_data), 6):
@@ -2398,7 +2777,8 @@ def _render_brake_curve_images(curve_data: list[dict[str, Any]]) -> list[io.Byte
 
             if len(valid_pairs) >= 2:
                 d, s = zip(*valid_pairs)
-                label = halt.get("station") or f"Halt {halt.get('sequence')}"
+                code = halt.get("station")
+                label = halt_label(code, halt.get("logging_time") if counts[code] > 1 else None) or f"Halt {halt.get('sequence')}"
                 ax.plot(d, s, color=color, linewidth=1.8, label=label, alpha=0.85)
 
         # X-axis: 100m intervals from 1000m to 0m
@@ -2513,22 +2893,9 @@ def _render_pdf_report(
         story.append(Spacer(1, 16))
 
     if halts:
-        # Deduplicate halts occurring at the same station within 600 meters
-        # Track original index for ghat section lookup
-        filtered_halts = []
-        original_indices = []  # Maps filtered index -> original index in halts
-        last_station = None
-        last_distance = None
-        for orig_idx, halt in enumerate(halts):
-            station = (halt.get("station") or "").strip().upper()
-            distance = float(halt.get("distance_m") or 0.0)
-            if station and station == last_station and last_distance is not None:
-                if abs(distance - last_distance) < 600.0:
-                    continue  # Skip very close halts in same station
-            filtered_halts.append(halt)
-            original_indices.append(orig_idx)
-            last_station = station
-            last_distance = distance
+        filtered_halts = halts
+        original_indices = list(range(len(halts)))
+        station_counts = Counter(h.get("station") for h in halts)
 
         # Determine zone boundary for 1000m threshold
         from_station = summary.get("from_station")
@@ -2556,7 +2923,8 @@ def _render_pdf_report(
             if in_ghat:
                 has_ghat_section = True
             # Add ▲ marker for ghat section stations
-            station_name = halt.get("station") or f"Halt {halt.get('sequence')}"
+            code = halt.get("station")
+            station_name = halt_label(code, halt.get("logging_time") if station_counts[code] > 1 else None) or f"Halt {halt.get('sequence')}"
             if in_ghat:
                 station_name = f"{station_name} ▲"
             row = [station_name]
@@ -3189,6 +3557,7 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
         bft_status = 'NOT RUN'
         bpt_status = 'NOT RUN'
         user_df = None
+        signal_matches = []
         try:
             print(f"####BRAKING#### data.get('run_id')={data.get('run_id')}")
             run_id_val = _resolve_run_id(None, data)
@@ -3220,6 +3589,25 @@ async def save_analysis(request: Request, data: Dict[str, Any] = Body(...)):
                             bpt_status = 'FAIL'
             except Exception as bte:
                 print(f"[WARN] Failed to compute brake test status: {bte}")
+
+            # Persist signal evidence in the existing metadata JSON. This is
+            # optional and must never prevent the main analysis from saving.
+            try:
+                if filtered.height > 0:
+                    chart_payload = _build_chart_payload(filtered, criteria)
+                    signal_matches = [
+                        marker for marker in chart_payload.get("halt_markers", [])
+                        if marker.get("match_source") == "SIGNAL"
+                    ]
+            except Exception as signal_exc:
+                print(f"[SIGNALS] Failed to prepare saved signal metadata: {signal_exc}")
+
+        if not isinstance(metadata, dict):
+            metadata = {}
+        else:
+            metadata = dict(metadata)
+        metadata["signal_matches"] = signal_matches
+        metadata["signal_match_radius_m"] = RTIS_SIGNAL_MATCH_RADIUS_M
 
         # Prepare SQL insert (includes ALP fields and BFT/BPT status)
         sql = """
@@ -5712,34 +6100,6 @@ def _get_400m_threshold(
 # Halt Detection Constants
 # ---------------------------------------------------------------------------
 HALT_TRIGGER_SPEED = 0.5      # Initial trigger: speed drops to this
-HALT_CONFIRM_SPEED = 0.3      # Confirmation: speed must stay below this
-HALT_MIN_DURATION_SEC = 10    # Minimum consecutive seconds at low speed
-
-
-def _is_confirmed_halt(speeds: list[float], start_idx: int, min_duration: int = HALT_MIN_DURATION_SEC) -> bool:
-    """
-    Check if a potential halt at start_idx is a genuine halt.
-
-    A halt is confirmed if speed stays <= HALT_CONFIRM_SPEED (0.3 km/h)
-    for at least min_duration consecutive seconds after the trigger point.
-
-    This filters out brief slowdowns and GPS noise that might cause
-    speed to momentarily drop below 0.5 km/h.
-    """
-    n = len(speeds)
-    consecutive_low = 0
-
-    for i in range(start_idx, min(start_idx + min_duration + 5, n)):
-        speed = speeds[i] if speeds[i] is not None else 0.0
-        if speed <= HALT_CONFIRM_SPEED:
-            consecutive_low += 1
-            if consecutive_low >= min_duration:
-                return True
-        else:
-            # Speed went above threshold, reset counter
-            consecutive_low = 0
-
-    return False
 
 
 def _offset_reading(
@@ -5758,6 +6118,9 @@ def _offset_reading(
     gap), the speed is linearly interpolated between the bracketing samples
     so the reading actually corresponds to the requested distance.
     """
+    if not dist_to_halt or dist_to_halt[0] < target:
+        return {"speed": None, "time": None, "station": None,
+                "delta_m": None, "unavailable": "insufficient_approach"}
     chosen_idx = halt_idx
     probe = halt_idx
     while probe >= 0 and dist_to_halt[probe] <= target:
@@ -5785,6 +6148,22 @@ def _offset_reading(
             reading["interpolated"] = True
             reading["gap_m"] = round(span, 1)
     return reading
+
+
+def _confirmed_halt_events(df: pl.DataFrame) -> list[dict[str, Any]]:
+    """Adapt RTIS columns to the shared detector without replacing null speed with zero."""
+    speed_col = _find_speed_column(df.columns)
+    time_col = _find_time_column(df.columns)
+    if df.is_empty() or not speed_col or not time_col:
+        return []
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    return detect_halts(
+        df[speed_col].cast(pl.Float64, strict=False).to_list(),
+        df[time_col].to_list(),
+        df[lat_col].to_list() if lat_col else None,
+        df[lon_col].to_list() if lon_col else None,
+    )
 
 
 def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
@@ -5822,25 +6201,7 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
     times = df[time_col].to_list() if time_col else [None] * len(speeds)
     times = [_stringify_time(t) for t in times]
 
-    first_move_idx = next((i for i, sp in enumerate(speeds) if sp and sp > 0.5), None)
-    if first_move_idx is None:
-        return []
-
-    halts: list[int] = []
-    last_halt_distance: float | None = None
-    for idx in range(first_move_idx + 1, len(speeds)):
-        prev_speed = speeds[idx - 1]
-        current_speed = speeds[idx]
-        # Initial trigger: speed drops below threshold
-        if current_speed <= HALT_TRIGGER_SPEED and prev_speed > HALT_TRIGGER_SPEED:
-            # Confirmation: speed must stay low for at least 10 consecutive seconds
-            if not _is_confirmed_halt(speeds, idx):
-                continue
-            halt_distance = cumulative[idx]
-            if last_halt_distance is not None and (halt_distance - last_halt_distance) < 200.0:
-                continue
-            halts.append(idx)
-            last_halt_distance = halt_distance
+    halts = [event["index"] for event in _confirmed_halt_events(df)]
 
     results: list[dict[str, Any]] = []
     for seq, halt_idx in enumerate(halts, start=1):
@@ -5864,6 +6225,7 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
             "sequence": seq,
             "index": halt_idx,
             "station": display_station,
+            "station_label": halt_label(display_station),
             "logging_time": times[halt_idx],
             "distance_m": halt_dist,
             "speeds": {},
@@ -5969,6 +6331,7 @@ def _halt_deceleration_metrics(
         results.append({
             "sequence": halt.get("sequence"),
             "station": halt.get("station"),
+            "station_label": halt_label(halt.get("station")),
             "halt_time": halt.get("logging_time"),
             "speed_1000_kmph": sample_1000.get("speed") if sample_1000 else None,
             "speed_400_kmph": sample_400.get("speed") if sample_400 else None,
@@ -6016,129 +6379,28 @@ def _halt_deceleration_metrics(
 
 
 def _braking_profile_full_curve(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
-    """
-    Extract braking data with full curve points for smooth PDF charts.
-
-    Filtering rules:
-    - Minimum 200m spacing between halts
-    - Must have >= 1000m approach data
-
-    Returns unified structure with:
-    - Discrete offsets (for PDF table)
-    - Full curve data (for smooth PDF charts)
-    """
-    if df.is_empty():
+    """Add raw curve points to the shared braking table, retaining short approaches."""
+    halts = _braking_profile(df, offsets)
+    if not halts:
         return []
-    speed_col = _find_speed_column(df.columns)
     dist_col = _find_distance_column(df.columns)
-    if not speed_col or not dist_col:
-        return []
-
-    speeds = (
-        df[speed_col]
-        .cast(pl.Float64, strict=False)
-        .fill_null(0.0)
-        .to_list()
-    )
-    dist_steps = (
-        df[dist_col]
-        .cast(pl.Float64, strict=False)
-        .fill_null(0.0)
-        .to_list()
-    )
-    dist_steps = [max(0.0, x or 0.0) for x in dist_steps]
-    cumulative: list[float] = []
-    running = 0.0
-    for step in dist_steps:
-        running += step
-        cumulative.append(running)
-
-    station_col = _first_matching_column(df.columns, "STATION", "CODE") or _first_matching_column(df.columns, "STATION")
-    if station_col:
-        stations = [str(val).strip() if val is not None else None for val in df[station_col].to_list()]
-    else:
-        stations = [None] * len(speeds)
-    time_col = _find_time_column(df.columns)
-    times = df[time_col].to_list() if time_col else [None] * len(speeds)
-    times = [_stringify_time(t) for t in times]
-
-    first_move_idx = next((i for i, sp in enumerate(speeds) if sp and sp > 0.5), None)
-    if first_move_idx is None:
-        return []
-
-    # Find all halts with 200m spacing and 10-second confirmation
-    halts: list[int] = []
-    last_halt_distance: float | None = None
-    for idx in range(first_move_idx + 1, len(speeds)):
-        prev_speed = speeds[idx - 1]
-        current_speed = speeds[idx]
-        # Initial trigger: speed drops below threshold
-        if current_speed <= HALT_TRIGGER_SPEED and prev_speed > HALT_TRIGGER_SPEED:
-            # Confirmation: speed must stay low for at least 10 consecutive seconds
-            if not _is_confirmed_halt(speeds, idx):
-                continue
-            halt_distance = cumulative[idx]
-            if last_halt_distance is not None and (halt_distance - last_halt_distance) < 200.0:
-                continue
-            halts.append(idx)
-            last_halt_distance = halt_distance
-
-    results: list[dict[str, Any]] = []
-    for seq, halt_idx in enumerate(halts, start=1):
-        halt_dist = cumulative[halt_idx]
-        halt_station = stations[halt_idx]
-        display_station = str(halt_station).strip() if halt_station else f"{halt_dist:.0f} m"
-
-        # Calculate distance to halt for all points
-        dist_to_halt: list[float] = [0.0] * (halt_idx + 1)
-        running_back = 0.0
-        for idx in range(halt_idx - 1, -1, -1):
-            step = dist_steps[idx + 1] if idx + 1 < len(dist_steps) else 0.0
-            running_back += step
-            dist_to_halt[idx] = running_back
-
-        # Check if we have at least 1000m of approach data
-        max_approach = dist_to_halt[0] if dist_to_halt else 0.0
-        if max_approach < 1000.0:
-            # Skip this halt - insufficient approach data
-            continue
-
-        # Extract discrete offsets for table
-        speeds_dict = {}
-        for offset in offsets:
-            speeds_dict[str(offset)] = _offset_reading(
-                float(offset), halt_idx, dist_to_halt, speeds, times, stations
-            )
-
-        # Extract ALL points within 1000m for smooth curve
-        curve_distances: list[float] = []
-        curve_speeds: list[float | None] = []
-
-        for idx in range(halt_idx + 1):
-            d = dist_to_halt[idx]
-            if d <= 1000.0:
-                curve_distances.append(d)
-                curve_speeds.append(speeds[idx])
-
-        # Reverse so distance goes from 1000m → 0m (not 0m → 1000m)
-        curve_distances.reverse()
-        curve_speeds.reverse()
-
-        halt_entry = {
-            "sequence": seq,
-            "index": halt_idx,
-            "station": display_station,
-            "logging_time": times[halt_idx],
-            "distance_m": halt_dist,
-            "speeds": speeds_dict,  # For table
-            "curve_data": {  # For smooth chart
-                "distances": curve_distances,
-                "speeds": curve_speeds
-            }
+    speed_col = _find_speed_column(df.columns)
+    steps = df[dist_col].cast(pl.Float64, strict=False).fill_null(0.0).to_list()
+    speeds = df[speed_col].cast(pl.Float64, strict=False).to_list()
+    for halt in halts:
+        idx = halt["index"]
+        distance = 0.0
+        points = [(0.0, speeds[idx])]
+        for j in range(idx - 1, -1, -1):
+            distance += max(0.0, steps[j + 1] or 0.0)
+            if distance > 1000:
+                break
+            points.append((distance, speeds[j]))
+        halt["curve_data"] = {
+            "distances": [d for d, _ in points],
+            "speeds": [v for _, v in points],
         }
-        results.append(halt_entry)
-
-    return results
+    return halts
 
 
 def _detect_brake_event(
@@ -7958,33 +8220,18 @@ def _save_braking_run_data(conn, analysis_id: int, criteria: dict, df: pl.DataFr
 
     # Find halts at nominated stations
     detected_halts = []
-    last_halt_positions = {}  # Track last detected position for each halt code
     halt_candidates = 0
-    MIN_DISTANCE_SAME_HALT = 500.0  # Minimum 500m between same halt detections
 
-    for idx in range(len(speeds)):
-        if speeds[idx] <= HALT_TRIGGER_SPEED:
-            halt_candidates += 1
+    for event in _confirmed_halt_events(df):
+        idx = event["index"]
+        halt_candidates += 1
         halt_info = _detect_nominated_halt_at_row(lats[idx], lons[idx], speeds[idx], direction, nominated_halts)
         if halt_info:
-            # Confirmation: speed must stay low for at least 10 consecutive seconds
-            if not _is_confirmed_halt(speeds, idx):
-                continue
-
             halt_code = halt_info["halt_code"]
-            # Check if we've detected this halt before and if we're far enough from last detection
-            if halt_code in last_halt_positions:
-                last_lat, last_lon = last_halt_positions[halt_code]
-                dist = _haversine_m(lats[idx], lons[idx], last_lat, last_lon)
-                if dist < MIN_DISTANCE_SAME_HALT:
-                    # Too close to previous detection of same halt, skip
-                    continue
-
             print(f"####BRAKING#### Detected halt: {halt_code} at idx={idx}, lat={lats[idx]}, lon={lons[idx]}")
             detected_halts.append({"idx": idx, "halt_info": halt_info})
-            last_halt_positions[halt_code] = (lats[idx], lons[idx])
 
-    print(f"[####BRAKING####] Found {halt_candidates} rows with speed<={HALT_TRIGGER_SPEED}, detected {len(detected_halts)} confirmed halts (10s duration)")
+    print(f"[####BRAKING####] Found {halt_candidates} rows with speed<={HALT_TRIGGER_SPEED}, detected {len(detected_halts)} confirmed halt events")
 
     if not detected_halts:
         print("\[####BRAKING####] No nominated halts detected - exiting")
