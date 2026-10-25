@@ -47,6 +47,22 @@ class HaltDetectionTests(unittest.TestCase):
     def test_slow_movement_with_speed_noise_is_not_a_stop(self):
         self.assertEqual(detect_halts(*self.journey([0.4, 1.4, 1.8, 1.2] * 30, moving_gps=True)), [])
 
+    def test_station_crawl_with_gps_drift_is_a_stop(self):
+        # 11041 CCH 20 Oct 2026: about 1 km/h with GPS creeping ~0.4 m/s.
+        speeds, times, lats, lons = self.journey([0.2, 0.7, 1.2, 0.4] * 10, moving_gps=True)
+        self.assertEqual(detect_halts(speeds, times, lats, lons), [])
+        events = detect_halts(speeds, times, lats, lons, [False] * 15 + [True] * 40)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['method'], 'gps_stationary')
+
+    def test_station_crawl_at_one_kmh_is_not_a_stop(self):
+        speeds, times, lats, lons = self.journey(([1.0] * 9 + [0.5]) * 6, moving_gps=True)
+        self.assertEqual(detect_halts(speeds, times, lats, lons, [True] * len(speeds)), [])
+
+    def test_station_fence_does_not_relax_speed_conditions(self):
+        speeds, times, lats, lons = self.journey([1.5, 2.0, 1.8] * 15, moving_gps=True)
+        self.assertEqual(detect_halts(speeds, times, lats, lons, [True] * len(speeds)), [])
+
     def test_brief_dip_is_not_a_stop(self):
         self.assertEqual(detect_halts(*self.journey([0.1] * 8 + [30.0] * 30)), [])
 

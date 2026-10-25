@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 import os
-from rtis_halts import detect_halts, departure_anchor, halt_label, timestamp as halt_timestamp
+from rtis_halts import detect_halts, departure_anchor, halt_label, number as halt_number, timestamp as halt_timestamp
 from collections import Counter
 
 __version__ = "1.2.0"
@@ -1757,7 +1757,7 @@ def _detect_halt_markers_from_enriched(enriched_df: pl.DataFrame, original_colum
     """Use the same confirmed stop events as the braking tables and PDF."""
     station_col = _first_matching_column(original_columns, "STATION", "CODE") or _first_matching_column(original_columns, "STATION")
     halts = []
-    for event in _confirmed_halt_events(enriched_df):
+    for event in _section_halt_events(enriched_df):
         idx = event["index"]
         station = enriched_df[station_col][idx] if station_col else None
         halts.append({
@@ -5754,12 +5754,69 @@ def _confirmed_halt_events(df: pl.DataFrame) -> list[dict[str, Any]]:
         return []
     lat_col = _first_matching_column(df.columns, "LAT")
     lon_col = _first_matching_column(df.columns, "LON")
+    speeds = df[speed_col].cast(pl.Float64, strict=False).to_list()
+    lats = df[lat_col].cast(pl.Float64, strict=False).to_list() if lat_col else None
+    lons = df[lon_col].cast(pl.Float64, strict=False).to_list() if lon_col else None
     return detect_halts(
-        df[speed_col].cast(pl.Float64, strict=False).to_list(),
+        speeds,
         df[time_col].to_list(),
-        df[lat_col].to_list() if lat_col else None,
-        df[lon_col].to_list() if lon_col else None,
+        lats,
+        lons,
+        _station_fence_flags(df, speeds, lats, lons),
     )
+
+
+def _station_fence_flags(df: pl.DataFrame, speeds: list, lats: list | None,
+                         lons: list | None) -> list[bool] | None:
+    """Mark slow rows inside their coded station's geofence (exact radius, no margin)."""
+    station_col = _first_matching_column(df.columns, "STATION")
+    if not station_col or lats is None or lons is None:
+        return None
+    fences: dict[str, list[dict[str, Any]]] = {}
+    flags = []
+    for code, speed, lat, lon in zip(df[station_col].to_list(), speeds, lats, lons):
+        code = str(code or "").strip().upper()
+        if not code or speed is None or speed > 3 or lat is None or lon is None:
+            flags.append(False)
+            continue
+        if code not in fences:
+            fences[code] = [g for g in _geofences_for_station(code, None)
+                            if g.get("latitude") is not None and g.get("longitude") is not None
+                            and float(g.get("radius_m") or 0) > 0]
+        flags.append(any(_haversine_m(lat, lon, g["latitude"], g["longitude"]) <= float(g["radius_m"])
+                         for g in fences[code]))
+    return flags
+
+
+def _section_halt_events(df: pl.DataFrame) -> list[dict[str, Any]]:
+    """Confirmed stops plus the destination platform arrival that ends a section.
+
+    A section ends at the first slow (<1 km/h) reading inside the destination
+    geofence. Station-roof GPS noise can delay confirmation beyond that point,
+    and an earlier stop under the same station code may be a signal outside
+    the fence, so the arrival itself is the destination braking checkpoint.
+    """
+    events = _confirmed_halt_events(df)
+    speed_col = _find_speed_column(df.columns)
+    station_col = _first_matching_column(df.columns, "STATION")
+    lat_col = _first_matching_column(df.columns, "LAT")
+    lon_col = _first_matching_column(df.columns, "LON")
+    if df.is_empty() or not speed_col or not station_col or not lat_col or not lon_col:
+        return events
+    last = df.height - 1
+    speed = halt_number(df[speed_col][last])
+    code = str(df[station_col][last] or "").strip().upper()
+    geos = _geofences_for_station(code, None) if code else []
+    if speed is None or speed >= 1 or not geos:
+        return events
+
+    def inside(idx: int) -> bool:
+        return _within_geofence(halt_number(df[lat_col][idx]), halt_number(df[lon_col][idx]), geos)[0]
+
+    if not inside(last) or any(str(df[station_col][e["index"]] or "").strip().upper() == code
+                               and inside(e["index"]) for e in events):
+        return events
+    return events + [{"index": last, "confirmed_index": last, "method": "destination_arrival"}]
 
 
 def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any]]:
@@ -5797,7 +5854,7 @@ def _braking_profile(df: pl.DataFrame, offsets: list[int]) -> list[dict[str, Any
     times = df[time_col].to_list() if time_col else [None] * len(speeds)
     times = [_stringify_time(t) for t in times]
 
-    halts = [event["index"] for event in _confirmed_halt_events(df)]
+    halts = [event["index"] for event in _section_halt_events(df)]
 
     results: list[dict[str, Any]] = []
     for seq, halt_idx in enumerate(halts, start=1):

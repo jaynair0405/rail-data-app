@@ -229,6 +229,9 @@ class AppHaltIntegrationTests(unittest.TestCase):
 
     def test_11041_dr_pune_lists_every_confirmed_stop(self):
         # Production PDF of 21 Oct 2026 listed only KYN for this section.
+        # CCH (scheduled) was a slow crawl, accepted inside its DN geofence.
+        # The first PUNE stop is at the S-3 signal; the platform arrival that
+        # ends the section is the destination checkpoint.
         pl = self.app.pl
         files = [ROOT / 'issue-review' / 'G G KHANZODE-OMKAR -11041-22685 PAR 1  RJ.csv',
                  ROOT / 'issue-review' / 'G G KHANZODE PAR 2.csv']
@@ -243,7 +246,8 @@ class AppHaltIntegrationTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             filtered = self.app.apply_criteria(df, criteria)
             halts = self.app._braking_profile(filtered, self.app.VIOLATIONS_OFFSETS)
-        self.assertEqual([h['station'] for h in halts], ['TNA', 'KYN', 'KJT', 'LNL', 'TGN', 'PUNE'])
+        self.assertEqual([h['station'] for h in halts], ['TNA', 'KYN', 'KJT', 'LNL', 'TGN', 'CCH', 'PUNE', 'PUNE'])
+        self.assertEqual(halts[-1]['index'], filtered.height - 1)
 
 
 if __name__ == '__main__':

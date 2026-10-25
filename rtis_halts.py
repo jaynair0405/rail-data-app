@@ -117,7 +117,7 @@ def departure_anchor(speeds, times, departure, stations=None, origin=None,
     return departure
 
 
-def detect_halts(speeds, times, latitudes=None, longitudes=None):
+def detect_halts(speeds, times, latitudes=None, longitudes=None, in_station=None):
     """Return one event per stop, rearmed by 10 seconds of travel >=5 km/h.
 
     Preserve a strict low-speed checkpoint when available. Otherwise require
@@ -126,6 +126,11 @@ def detect_halts(speeds, times, latitudes=None, longitudes=None):
     data, conflicting/reversed time and gaps over 3 seconds break confirmation.
     Identical retransmissions at the same timestamp are one observation. GPS noise
     is never accumulated as distance to decide whether another stop occurred.
+
+    ``in_station`` optionally marks rows inside a station geofence. There some
+    devices report a slow crawl through the whole dwell, so the noise-tolerant
+    window accepts GPS drift up to 20 metres if its median speed is below
+    0.9 km/h; the other speed conditions are unchanged.
     """
     size = len(speeds)
     if len(times) != size:
@@ -140,6 +145,9 @@ def detect_halts(speeds, times, latitudes=None, longitudes=None):
             lat, lon = number(lat), number(lon)
             if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
                 points[i] = (lat, lon)
+    if in_station is not None and len(in_station) != size:
+        raise ValueError("Station geofence flags and speed arrays must have equal lengths")
+    in_station = [bool(v) for v in in_station] if in_station is not None else [False] * size
 
     # Some devices repeat an unchanged reading every few seconds. Such a row
     # supplies no additional elapsed time, but must not reset a genuine dwell.
@@ -156,6 +164,7 @@ def detect_halts(speeds, times, latitudes=None, longitudes=None):
     speeds = [speeds[i] for i in original_indices]
     times = [times[i] for i in original_indices]
     points = [points[i] for i in original_indices]
+    in_station = [in_station[i] for i in original_indices]
     size = len(original_indices)
 
     def elapsed(a, b):
@@ -233,7 +242,9 @@ def detect_halts(speeds, times, latitudes=None, longitudes=None):
         values = [speeds[j] for j in window]
         if min(values) > 0.5 or median(values) > 1:
             continue
-        if any(separation(points[window[0]], points[j]) > 5 for j in window):
+        spread = max(separation(points[window[0]], points[j]) for j in window)
+        if spread > 5 and not (spread <= 20 and all(in_station[j] for j in window)
+                               and median(values) < 0.9):
             continue
         # Confirmation may come late in a noisy dwell. Anchor the braking
         # approach to its first low reading, rather than adding GPS jitter
