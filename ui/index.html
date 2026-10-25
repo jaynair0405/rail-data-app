@@ -1212,7 +1212,7 @@ function renderBrakingTable(halts) {
 
   const rowsHtml = halts.map(halt => {
     const ghatMarker = halt.in_ghat_section ? " ▲" : "";
-    const info = `<strong>${halt.station || "Halt"}${ghatMarker}</strong><br/><small>${halt.logging_time || ""}</small>`;
+    const info = `<strong>${halt.station_label || halt.station || "Halt"}${ghatMarker}</strong><br/><small>${halt.logging_time || ""}</small>`;
     let rowClass = "";
     const cells = BRAKE_OFFSETS.map(offset => {
       const key = String(offset);
@@ -1276,7 +1276,7 @@ function renderBrakingChart(halts) {
     return;
   }
   const series = halts.map(halt => {
-    const label = halt.station ? `${halt.station}` : `Halt ${halt.sequence}`;
+    const label = halt.station ? `${halt.station_label || halt.station}` : `Halt ${halt.sequence}`;
     const legend = label || `Halt ${halt.sequence}`;
     const data = BRAKE_CHART_STEPS.map(step => {
       if (step === 0) {
@@ -1364,7 +1364,7 @@ function renderDecelerationTable(rows) {
       ? `${formatSpeedCell(sharpSpeed)} km/h @ ${Math.round(sharpDistance)} m${sharpTime ? `<br/><small>${sharpTime}</small>` : ""}`
       : "—";
     return `<tr>
-      <td>${row.station || "—"}<br/><small>${row.halt_time || ""}</small></td>
+      <td>${row.station_label || row.station || "—"}<br/><small>${row.halt_time || ""}</small></td>
       <td>${formatSpeedCell(row.speed_1000_kmph)}</td>
       <td>${formatSpeedCell(row.speed_400_kmph)}</td>
       <td>${formatSpeedCell(row.speed_250_kmph)}</td>
